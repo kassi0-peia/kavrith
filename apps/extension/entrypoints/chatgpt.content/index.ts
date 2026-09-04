@@ -110,7 +110,17 @@ export default defineContentScript({
         pendingInitialPrime = false;
       }
 
+      const latestAssistantMessage = [
+        ...document.querySelectorAll<HTMLElement>(
+          "[data-message-author-role='assistant']",
+        ),
+      ].at(-1);
+
       for (const message of pendingAssistantMessages) {
+        // ChatGPT virtualizes long conversations. Historical assistant turns can
+        // be remounted later and produce ordinary DOM mutations; those must not
+        // be mistaken for a new live reply and re-executed/reported.
+        if (message !== latestAssistantMessage) continue;
         inspect(message);
         await maybeRecoverMissingVisibleDirectiveForMessage(message);
       }

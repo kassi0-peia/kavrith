@@ -3,6 +3,8 @@ import {
   enqueueResult,
   pendingResult,
   removeResult,
+  resultAllowsAutomaticRetry,
+  withResultAutomaticRetry,
   type ResultOutboxByChat,
 } from "../../lib/result-outbox";
 import { createAsyncMutationQueue } from "../../lib/async-mutation-queue";
@@ -29,7 +31,10 @@ const deliveryAttempts = new Map<
 const AUTO_RETRY_MIN_MS = 2_000;
 const AUTO_RETRY_MAX_MS = 30_000;
 
-function resultObservedInChat(result: string): boolean {
+function resultObservedInChat(
+  result: string,
+  recentUserTurnLimit = 4,
+): boolean {
   const explicitUsers = [
     ...document.querySelectorAll<HTMLElement>(
       "[data-message-author-role='user']",
@@ -47,11 +52,28 @@ function resultObservedInChat(result: string): boolean {
             !turn.querySelector("[data-message-author-role='assistant']"),
         );
 
-  return candidates
-    .slice(-4)
+  const messages =
+    recentUserTurnLimit > 0
+      ? candidates.slice(-recentUserTurnLimit)
+      : candidates;
+  return messages
     .some((message) =>
       userTurnContainsDeliveredResult(result, message.innerText),
     );
+}
+
+export async function reconcileObservedQueuedResult(
+  identity: string,
+  result: string,
+): Promise<boolean> {
+  const sessionId = kavrithSessionId();
+  const queued = pendingResult(await getOutbox(), sessionId, identity);
+  if (!queued || queued.result !== result) return !queued;
+  if (!resultObservedInChat(result, 0)) return false;
+
+  await clearQueuedResult(sessionId, identity);
+  await confirmMissingDirectiveRecovery(sessionId);
+  return true;
 }
 
 async function waitForObservedResult(result: string): Promise<boolean> {
@@ -119,6 +141,23 @@ async function clearQueuedResult(
   });
 }
 
+async function setQueuedAutomaticRetry(
+  sessionId: string,
+  identity: string,
+  automaticRetry: boolean,
+): Promise<void> {
+  await mutateOutbox(async () => {
+    await browser.storage.local.set({
+      [RESULT_OUTBOX_STORAGE_KEY]: withResultAutomaticRetry(
+        await getOutbox(),
+        sessionId,
+        identity,
+        automaticRetry,
+      ),
+    });
+  });
+}
+
 async function attemptQueuedDelivery(
   sessionId: string,
   identity: string,
@@ -167,6 +206,8 @@ async function attemptQueuedDelivery(
     if (sent.ok) {
       await clearQueuedResult(sessionId, identity);
       await confirmMissingDirectiveRecovery(sessionId);
+    } else if (sent.automaticRetry === false) {
+      await setQueuedAutomaticRetry(sessionId, identity, false);
     }
     return sent;
   })();
@@ -218,6 +259,7 @@ export function resumeQueuedResult(
     while (kavrithSessionId() === sessionId) {
       const queued = pendingResult(await getOutbox(), sessionId, identity);
       if (!queued || queued.result !== result) return;
+      if (!resultAllowsAutomaticRetry(queued)) return;
 
       const sent = await attemptQueuedDelivery(
         sessionId,
@@ -277,7 +319,9 @@ export async function returnResultToChatGPT(
   }
 
   addComposerAction(controls, identity, result, sent.message);
-  resumeQueuedResult(identity, result, false);
+  if (sent.automaticRetry !== false) {
+    resumeQueuedResult(identity, result, false);
+  }
 }
 
 function formatKavrithError(

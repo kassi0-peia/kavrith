@@ -13,6 +13,15 @@ export function composerOwnershipFailure(message: string) {
   };
 }
 
+export function composerRecoveryFailure(
+  message: string,
+  userEdited: boolean,
+) {
+  return userEdited
+    ? composerOwnershipFailure(message)
+    : { ok: false as const, message };
+}
+
 export function normalizedComposerText(value: string): string {
   return value
     .replace(/\r\n?/g, "\n")

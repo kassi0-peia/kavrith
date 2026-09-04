@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   composerMatchesExpected,
   composerOwnershipFailure,
+  composerRecoveryFailure,
   composerRecoveryDecision,
   composerRollbackDecision,
   composerSendAcceptanceDecision,
@@ -12,6 +13,21 @@ import {
 
 test("composer ownership failures never auto-retry", () => {
   assert.deepEqual(composerOwnershipFailure("changed"), {
+    ok: false,
+    message: "changed",
+    automaticRetry: false,
+  });
+});
+
+test("untrusted composer churn remains automatically retryable", () => {
+  assert.deepEqual(composerRecoveryFailure("changed", false), {
+    ok: false,
+    message: "changed",
+  });
+});
+
+test("trusted user editing makes composer recovery manual-only", () => {
+  assert.deepEqual(composerRecoveryFailure("changed", true), {
     ok: false,
     message: "changed",
     automaticRetry: false,

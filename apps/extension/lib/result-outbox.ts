@@ -2,6 +2,7 @@ export interface ResultOutboxEntry {
   directiveId: string;
   result: string;
   createdAt: number;
+  automaticRetry?: boolean;
 }
 
 export type ResultOutboxByChat = Record<
@@ -20,9 +21,20 @@ export function enqueueResult(
     ...byChat,
     [sessionId]: {
       ...(byChat[sessionId] ?? {}),
-      [directiveId]: { directiveId, result, createdAt },
+      [directiveId]: {
+        directiveId,
+        result,
+        createdAt,
+        automaticRetry: true,
+      },
     },
   };
+}
+
+export function resultAllowsAutomaticRetry(
+  entry: ResultOutboxEntry,
+): boolean {
+  return entry.automaticRetry === true;
 }
 
 export function removeResult(
@@ -41,6 +53,23 @@ export function removeResult(
     next[sessionId] = nextChat;
   }
   return next;
+}
+
+export function withResultAutomaticRetry(
+  byChat: ResultOutboxByChat,
+  sessionId: string,
+  directiveId: string,
+  automaticRetry: boolean,
+): ResultOutboxByChat {
+  const current = byChat[sessionId]?.[directiveId];
+  if (!current) return byChat;
+  return {
+    ...byChat,
+    [sessionId]: {
+      ...byChat[sessionId],
+      [directiveId]: { ...current, automaticRetry },
+    },
+  };
 }
 
 export function pendingResult(

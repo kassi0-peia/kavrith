@@ -10,6 +10,7 @@ import {
 import {
   addComposerAction,
   getOutbox,
+  reconcileObservedQueuedResult,
   resumeQueuedResult,
   returnResultToChatGPT,
 } from "./result-delivery";
@@ -24,7 +25,10 @@ import {
   addReadAction,
   addSearchAction,
 } from "./inspection-actions";
-import { pendingResult } from "../../lib/result-outbox";
+import {
+  pendingResult,
+  resultAllowsAutomaticRetry,
+} from "../../lib/result-outbox";
 import {
   directiveCodeContent,
   directiveCodeSnapshot,
@@ -85,7 +89,10 @@ function clearFullTextRetry(pre: HTMLElement): void {
   fullTextRetryAttempts.delete(pre);
 }
 
-function retryWhenFullTextIsReady(pre: HTMLElement): boolean {
+function retryWhenFullTextIsReady(
+  pre: HTMLElement,
+  retry: () => void,
+): boolean {
   if (fullTextRetryTimers.has(pre)) return true;
   const attempt = fullTextRetryAttempts.get(pre) ?? 0;
   if (attempt >= MAX_FULL_TEXT_RETRY_ATTEMPTS) return false;
@@ -95,7 +102,7 @@ function retryWhenFullTextIsReady(pre: HTMLElement): boolean {
     pre,
     window.setTimeout(() => {
       fullTextRetryTimers.delete(pre);
-      if (pre.isConnected) inspect(pre);
+      if (pre.isConnected) retry();
     }, delay),
   );
   return true;
@@ -197,6 +204,26 @@ async function handleMalformedDirective(
   return true;
 }
 
+async function primeMalformedDirective(
+  pre: HTMLElement,
+  code: HTMLElement,
+  text: string,
+): Promise<boolean> {
+  const parseError = kavrithDirectiveParseError(text);
+  if (!parseError) return false;
+
+  const identity = directiveId(code, `invalid-${parseError.type}`, text);
+  pre.setAttribute(PROCESSED_ATTRIBUTE, "true");
+
+  if (!identity) return true;
+  claimedMalformedDirectives.add(identity);
+  if ((await getDirectiveState(identity)) === undefined) {
+    await setDirectiveState(identity, "failed");
+  }
+
+  return true;
+}
+
 async function currentTaskRoot(): Promise<string> {
   const sessionId = kavrithSessionId();
   const initialization = await getChatInitialization(sessionId);
@@ -218,12 +245,16 @@ export async function restoreQueuedResults(): Promise<void> {
     const text = snapshot.text;
     if (!code || text === undefined) continue;
     if (!directiveSnapshotReadyForParsing(snapshot)) {
-      retryWhenFullTextIsReady(pre);
+      retryWhenFullTextIsReady(pre, () => void restoreQueuedResults());
       continue;
     }
     const directive = parseDirective(text);
     const parseError = directive ? undefined : kavrithDirectiveParseError(text);
-    if (!directive && parseError && retryWhenFullTextIsReady(pre)) {
+    if (
+      !directive &&
+      parseError &&
+      retryWhenFullTextIsReady(pre, () => void restoreQueuedResults())
+    ) {
       continue;
     }
     clearFullTextRetry(pre);
@@ -235,15 +266,23 @@ export async function restoreQueuedResults(): Promise<void> {
     if (!identity) continue;
     const queued = pendingResult(outbox, sessionId, identity);
     if (!queued) continue;
+    if (await reconcileObservedQueuedResult(identity, queued.result)) {
+      pre.setAttribute(PROCESSED_ATTRIBUTE, "true");
+      continue;
+    }
 
     const controls = createControls();
     addComposerAction(
       controls,
       identity,
       queued.result,
-      "Kavrith result is queued and retrying automatically.",
+      resultAllowsAutomaticRetry(queued)
+        ? "Kavrith result is queued and retrying automatically."
+        : "Kavrith result is queued for manual delivery.",
     );
-    resumeQueuedResult(identity, queued.result);
+    if (resultAllowsAutomaticRetry(queued)) {
+      resumeQueuedResult(identity, queued.result);
+    }
     pre.append(controls);
     registerAction(code, controls);
   }
@@ -269,13 +308,14 @@ export function inspect(root: ParentNode): void {
     const text = snapshot.text;
     if (!code || text === undefined) continue;
     if (!directiveSnapshotReadyForParsing(snapshot)) {
-      retryWhenFullTextIsReady(pre);
+      retryWhenFullTextIsReady(pre, () => inspect(pre));
       continue;
     }
     const directive = parseDirective(text);
     if (!directive) {
       const parseError = kavrithDirectiveParseError(text);
-      if (parseError && retryWhenFullTextIsReady(pre)) continue;
+      if (parseError && retryWhenFullTextIsReady(pre, () => inspect(pre)))
+        continue;
       clearFullTextRetry(pre);
       void handleMalformedDirective(pre, code, text);
       continue;
@@ -350,6 +390,68 @@ export function inspect(root: ParentNode): void {
   }
 }
 
+function primeExistingDirective(pre: HTMLElement): void {
+  if (
+    !pre.isConnected ||
+    !isUnprocessedCodeBlock(pre, PROCESSED_ATTRIBUTE, CLAIMING_ATTRIBUTE)
+  )
+    return;
+
+  const code = directiveCodeContent(pre) as HTMLElement | undefined;
+  const snapshot = fullDirectiveCodeText(pre);
+  const text = snapshot.text;
+  if (!code || text === undefined) return;
+  if (!directiveSnapshotReadyForParsing(snapshot)) {
+    retryWhenFullTextIsReady(pre, () => primeExistingDirective(pre));
+    return;
+  }
+  const directive = parseDirective(text);
+  if (!directive) {
+    const parseError = kavrithDirectiveParseError(text);
+    if (
+      parseError &&
+      retryWhenFullTextIsReady(pre, () => primeExistingDirective(pre))
+    )
+      return;
+    clearFullTextRetry(pre);
+    void primeMalformedDirective(pre, code, text);
+    return;
+  }
+  clearFullTextRetry(pre);
+
+  const identity = directiveId(code, directive.type, text);
+  if (!identity) return;
+
+  if (isMutationDirective(directive)) {
+    pre.setAttribute(CLAIMING_ATTRIBUTE, "true");
+    void getDirectiveState(identity).then(
+      (state) => {
+        pre.removeAttribute(CLAIMING_ATTRIBUTE);
+        if (state !== "pending") {
+          pre.setAttribute(PROCESSED_ATTRIBUTE, "true");
+          return;
+        }
+        addMutationAction(code, directive, identity, true);
+      },
+      () => {
+        pre.removeAttribute(CLAIMING_ATTRIBUTE);
+      },
+    );
+    return;
+  }
+
+  pre.setAttribute(CLAIMING_ATTRIBUTE, "true");
+  void setDirectiveState(identity, "completed").then(
+    () => {
+      pre.removeAttribute(CLAIMING_ATTRIBUTE);
+      pre.setAttribute(PROCESSED_ATTRIBUTE, "true");
+    },
+    () => {
+      pre.removeAttribute(CLAIMING_ATTRIBUTE);
+    },
+  );
+}
+
 export function primeExistingDirectives(): void {
   const generation = ++startupPrimeGeneration;
   const codes = document.querySelectorAll<HTMLElement>(ASSISTANT_CODE_SELECTOR);
@@ -362,62 +464,7 @@ export function primeExistingDirectives(): void {
     const end = Math.min(index + STARTUP_PRIME_BATCH_SIZE, codes.length);
     for (; index < end; index += 1) {
       const pre = codes[index];
-      if (
-        !pre ||
-        !pre.isConnected ||
-        !isUnprocessedCodeBlock(pre, PROCESSED_ATTRIBUTE, CLAIMING_ATTRIBUTE)
-      )
-        continue;
-
-      const code = directiveCodeContent(pre) as HTMLElement | undefined;
-      const snapshot = fullDirectiveCodeText(pre);
-      const text = snapshot.text;
-      if (!code || text === undefined) continue;
-      if (!directiveSnapshotReadyForParsing(snapshot)) {
-        retryWhenFullTextIsReady(pre);
-        continue;
-      }
-      const directive = parseDirective(text);
-      if (!directive) {
-        const parseError = kavrithDirectiveParseError(text);
-        if (parseError && retryWhenFullTextIsReady(pre)) continue;
-        clearFullTextRetry(pre);
-        void handleMalformedDirective(pre, code, text);
-        continue;
-      }
-      clearFullTextRetry(pre);
-
-      const identity = directiveId(code, directive.type, text);
-      if (!identity) continue;
-
-      if (isMutationDirective(directive)) {
-        pre.setAttribute(CLAIMING_ATTRIBUTE, "true");
-        void getDirectiveState(identity).then(
-          (state) => {
-            pre.removeAttribute(CLAIMING_ATTRIBUTE);
-            if (state !== "pending") {
-              pre.setAttribute(PROCESSED_ATTRIBUTE, "true");
-              return;
-            }
-            addMutationAction(code, directive, identity, true);
-          },
-          () => {
-            pre.removeAttribute(CLAIMING_ATTRIBUTE);
-          },
-        );
-        continue;
-      }
-
-      pre.setAttribute(CLAIMING_ATTRIBUTE, "true");
-      void setDirectiveState(identity, "completed").then(
-        () => {
-          pre.removeAttribute(CLAIMING_ATTRIBUTE);
-          pre.setAttribute(PROCESSED_ATTRIBUTE, "true");
-        },
-        () => {
-          pre.removeAttribute(CLAIMING_ATTRIBUTE);
-        },
-      );
+      if (pre) primeExistingDirective(pre);
     }
 
     if (index < codes.length && generation === startupPrimeGeneration) {

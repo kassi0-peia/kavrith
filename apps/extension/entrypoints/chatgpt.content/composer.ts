@@ -1,6 +1,7 @@
 import {
   composerMatchesExpected,
   composerOwnershipFailure,
+  composerRecoveryFailure,
   composerRecoveryDecision,
   composerRollbackDecision,
   composerSendAcceptanceDecision,
@@ -339,8 +340,9 @@ export async function sendToChatGPT(
         result,
       );
       if (recovery === "abort") {
-        return composerOwnershipFailure(
-          "Result queued — the composer changed before Kavrith could send it. Your draft was left untouched.",
+        return composerRecoveryFailure(
+          "Result queued — ChatGPT changed the composer before Kavrith could send it.",
+          userEdited,
         );
       }
       if (recovery === "reinsert") {
@@ -400,8 +402,9 @@ export async function sendToChatGPT(
       result,
     );
     if (finalRecovery === "abort") {
-      return composerOwnershipFailure(
-        "Result queued — the composer changed before Kavrith could send it. Your draft was left untouched.",
+      return composerRecoveryFailure(
+        "Result queued — ChatGPT changed the composer before Kavrith could send it.",
+        userEdited,
       );
     }
 
