@@ -28,6 +28,7 @@ import { pendingResult } from "../../lib/result-outbox";
 import {
   directiveCodeContent,
   directiveCodeSnapshot,
+  directiveSnapshotReadyForParsing,
   isUnprocessedCodeBlock,
 } from "../../lib/chatgpt-code-block";
 import { kavrithDirectiveParseError } from "../../lib/chatgpt-directive-error";
@@ -216,8 +217,9 @@ export async function restoreQueuedResults(): Promise<void> {
     const snapshot = fullDirectiveCodeText(pre);
     const text = snapshot.text;
     if (!code || text === undefined) continue;
-    if (!snapshot.authoritative && text.startsWith("# kavrith:")) {
-      if (retryWhenFullTextIsReady(pre)) continue;
+    if (!directiveSnapshotReadyForParsing(snapshot)) {
+      retryWhenFullTextIsReady(pre);
+      continue;
     }
     const directive = parseDirective(text);
     const parseError = directive ? undefined : kavrithDirectiveParseError(text);
@@ -266,8 +268,9 @@ export function inspect(root: ParentNode): void {
     const snapshot = fullDirectiveCodeText(pre);
     const text = snapshot.text;
     if (!code || text === undefined) continue;
-    if (!snapshot.authoritative && text.startsWith("# kavrith:")) {
-      if (retryWhenFullTextIsReady(pre)) continue;
+    if (!directiveSnapshotReadyForParsing(snapshot)) {
+      retryWhenFullTextIsReady(pre);
+      continue;
     }
     const directive = parseDirective(text);
     if (!directive) {
@@ -370,8 +373,9 @@ export function primeExistingDirectives(): void {
       const snapshot = fullDirectiveCodeText(pre);
       const text = snapshot.text;
       if (!code || text === undefined) continue;
-      if (!snapshot.authoritative && text.startsWith("# kavrith:")) {
-        if (retryWhenFullTextIsReady(pre)) continue;
+      if (!directiveSnapshotReadyForParsing(snapshot)) {
+        retryWhenFullTextIsReady(pre);
+        continue;
       }
       const directive = parseDirective(text);
       if (!directive) {

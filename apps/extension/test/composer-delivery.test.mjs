@@ -2,11 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   composerMatchesExpected,
+  composerOwnershipFailure,
   composerRecoveryDecision,
   composerRollbackDecision,
   composerSendAcceptanceDecision,
   firstUsableCandidate,
+  userTurnContainsDeliveredResult,
 } from "../dist-test/lib/composer-delivery.js";
+
+test("composer ownership failures never auto-retry", () => {
+  assert.deepEqual(composerOwnershipFailure("changed"), {
+    ok: false,
+    message: "changed",
+    automaticRetry: false,
+  });
+});
 
 test("failed delivery restores an untouched Kavrith insertion", () => {
   assert.equal(
@@ -78,6 +88,57 @@ test("retry tolerates delayed rich-editor whitespace normalization", () => {
   );
 });
 
+test("retry ignores invisible rich-editor formatting marks", () => {
+  assert.equal(
+    composerMatchesExpected(
+      "<kavrith_result>root: /tmp/repo status: clean</kavrith_result>",
+      "\u200b<kavrith_result>root: /tmp/repo\u2060 status: clean</kavrith_result>\ufeff",
+    ),
+    true,
+  );
+});
+
+test("invisible-mark normalization does not hide real user edits", () => {
+  assert.equal(
+    composerRecoveryDecision(
+      "<kavrith_result>result</kavrith_result>",
+      "\u200b<kavrith_result>result</kavrith_result> my draft",
+      false,
+    ),
+    "abort",
+  );
+});
+
+test("observed user turn confirms an exact Kavrith result", () => {
+  assert.equal(
+    userTurnContainsDeliveredResult(
+      "<kavrith_result>\nstatus: clean\n</kavrith_result>",
+      "<kavrith_result> status: clean </kavrith_result>",
+    ),
+    true,
+  );
+});
+
+test("observed user turn may include a note after the Kavrith result", () => {
+  assert.equal(
+    userTurnContainsDeliveredResult(
+      "<kavrith_result>status: clean</kavrith_result>",
+      "<kavrith_result>status: clean</kavrith_result> i sent the result btw",
+    ),
+    true,
+  );
+});
+
+test("unrelated user text does not confirm Kavrith delivery", () => {
+  assert.equal(
+    userTurnContainsDeliveredResult(
+      "<kavrith_result>status: clean</kavrith_result>",
+      "ordinary user draft",
+    ),
+    false,
+  );
+});
+
 test("rich-editor normalization does not look like a foreign draft", () => {
   assert.equal(
     composerRecoveryDecision(
@@ -116,6 +177,18 @@ test("send acceptance requires ChatGPT to consume the queued result", () => {
   assert.equal(
     composerSendAcceptanceDecision("queued result", "new user draft"),
     "changed",
+  );
+});
+
+test("send acceptance recognizes an observed delivered user turn", () => {
+  assert.equal(
+    composerSendAcceptanceDecision(
+      "queued result",
+      "queued result",
+      "queued result",
+      true,
+    ),
+    "accepted",
   );
 });
 

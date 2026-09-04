@@ -1,5 +1,6 @@
 import {
   composerMatchesExpected,
+  composerOwnershipFailure,
   composerRecoveryDecision,
   composerRollbackDecision,
   composerSendAcceptanceDecision,
@@ -139,6 +140,7 @@ function findSendButton(composer: Composer): HTMLButtonElement | undefined {
 async function waitForSendAcceptance(
   expectedComposerText: string,
   sourceResult: string,
+  resultObserved?: () => boolean,
 ): Promise<
   | { ok: true }
   | { ok: false; message: string; automaticRetry: false }
@@ -147,8 +149,10 @@ async function waitForSendAcceptance(
   let sawComposer = false;
 
   while (performance.now() < deadline) {
+    const observed = resultObserved?.() ?? false;
     const current = findComposer();
     if (!current) {
+      if (observed) return { ok: true };
       await delay(80);
       continue;
     }
@@ -158,6 +162,7 @@ async function waitForSendAcceptance(
       expectedComposerText,
       composerText(current),
       sourceResult,
+      observed,
     );
     if (decision === "accepted") return { ok: true };
     if (decision === "changed") {
@@ -243,6 +248,7 @@ function appendToComposer(
 
 export async function sendToChatGPT(
   result: string,
+  resultObserved?: () => boolean,
 ): Promise<
   | { ok: true }
   | { ok: false; message: string; automaticRetry?: boolean }
@@ -258,11 +264,9 @@ export async function sendToChatGPT(
   const original = composerText(composer);
   const resultAlreadyPresent = composerMatchesExpected(result, original);
   if (original.trim().length > 0 && !resultAlreadyPresent) {
-    return {
-      ok: false,
-      message:
-        "ChatGPT composer contains a draft. Kavrith left it untouched; send the result after finishing your message.",
-    };
+    return composerOwnershipFailure(
+      "ChatGPT composer contains a draft. Kavrith left it untouched; send the result after finishing your message.",
+    );
   }
 
   let userEdited = false;
@@ -335,11 +339,9 @@ export async function sendToChatGPT(
         result,
       );
       if (recovery === "abort") {
-        return {
-          ok: false,
-          message:
-            "Result queued — the composer changed before Kavrith could send it. Your draft was left untouched.",
-        };
+        return composerOwnershipFailure(
+          "Result queued — the composer changed before Kavrith could send it. Your draft was left untouched.",
+        );
       }
       if (recovery === "reinsert") {
         const now = performance.now();
@@ -366,7 +368,11 @@ export async function sendToChatGPT(
       const send = findSendButton(composer);
       if (send) {
         send.click();
-        return await waitForSendAcceptance(expectedComposerText, result);
+        return await waitForSendAcceptance(
+          expectedComposerText,
+          result,
+          resultObserved,
+        );
       }
 
       const now = performance.now();
@@ -394,11 +400,9 @@ export async function sendToChatGPT(
       result,
     );
     if (finalRecovery === "abort") {
-      return {
-        ok: false,
-        message:
-          "Result queued — the composer changed before Kavrith could send it. Your draft was left untouched.",
-      };
+      return composerOwnershipFailure(
+        "Result queued — the composer changed before Kavrith could send it. Your draft was left untouched.",
+      );
     }
 
     // Sending failed after Kavrith inserted the result. Roll back only if the

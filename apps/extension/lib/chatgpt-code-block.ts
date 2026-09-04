@@ -15,6 +15,33 @@ export interface DirectiveCodeSnapshot {
   editorBacked: boolean;
 }
 
+export function directiveSnapshotReadyForParsing(
+  snapshot: DirectiveCodeSnapshot,
+): boolean {
+  const text = snapshot.text;
+  if (text === undefined) return false;
+  return snapshot.authoritative || !text.startsWith("# kavrith:");
+}
+
+export function preferredCodeMirrorDocumentText(
+  candidates: readonly string[],
+): string | undefined {
+  const texts = candidates
+    .map((value) => value.trim().replace(/\r\n?/g, "\n"))
+    .filter((value) => value.length > 0);
+  if (texts.length === 0) return undefined;
+
+  const longest = texts.reduce((best, value) =>
+    value.length > best.length ? value : best,
+  );
+
+  return texts.every(
+    (value) => value === longest || longest.startsWith(value),
+  )
+    ? longest
+    : undefined;
+}
+
 export function directiveCodeContent(
   pre: DirectiveCodeBlock,
 ): DirectiveCodeContent | undefined {

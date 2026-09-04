@@ -6,9 +6,15 @@ import {
   type ResultOutboxByChat,
 } from "../../lib/result-outbox";
 import { createAsyncMutationQueue } from "../../lib/async-mutation-queue";
+import { userTurnContainsDeliveredResult } from "../../lib/composer-delivery";
 import { kavrithSessionId } from "../../lib/kavrith-session";
 import { sendToChatGPT } from "./composer";
 import { createActionButton, errorMessage } from "./result-ui";
+import {
+  armMissingDirectiveRecovery,
+  captureMissingDirectiveRecoveryBaseline,
+  confirmMissingDirectiveRecovery,
+} from "./missing-directive-recovery";
 
 const RESULT_OUTBOX_STORAGE_KEY = "chatResultOutbox";
 const mutateOutbox = createAsyncMutationQueue();
@@ -22,6 +28,40 @@ const deliveryAttempts = new Map<
 >();
 const AUTO_RETRY_MIN_MS = 2_000;
 const AUTO_RETRY_MAX_MS = 30_000;
+
+function resultObservedInChat(result: string): boolean {
+  const explicitUsers = [
+    ...document.querySelectorAll<HTMLElement>(
+      "[data-message-author-role='user']",
+    ),
+  ];
+  const candidates =
+    explicitUsers.length > 0
+      ? explicitUsers
+      : [
+          ...document.querySelectorAll<HTMLElement>(
+            "[data-testid^='conversation-turn-']",
+          ),
+        ].filter(
+          (turn) =>
+            !turn.querySelector("[data-message-author-role='assistant']"),
+        );
+
+  return candidates
+    .slice(-4)
+    .some((message) =>
+      userTurnContainsDeliveredResult(result, message.innerText),
+    );
+}
+
+async function waitForObservedResult(result: string): Promise<boolean> {
+  const deadline = performance.now() + 2_000;
+  while (performance.now() < deadline) {
+    if (resultObservedInChat(result)) return true;
+    await delay(80);
+  }
+  return resultObservedInChat(result);
+}
 
 export async function getOutbox(): Promise<ResultOutboxByChat> {
   const stored = await browser.storage.local.get(RESULT_OUTBOX_STORAGE_KEY);
@@ -109,8 +149,25 @@ async function attemptQueuedDelivery(
       };
     }
 
-    const sent = await sendToChatGPT(result);
-    if (sent.ok) await clearQueuedResult(sessionId, identity);
+    if (resultObservedInChat(result)) {
+      await clearQueuedResult(sessionId, identity);
+      await confirmMissingDirectiveRecovery(sessionId);
+      return { ok: true as const };
+    }
+
+    const recoveryBaseline = captureMissingDirectiveRecoveryBaseline();
+    await armMissingDirectiveRecovery(sessionId, recoveryBaseline);
+    const sent = await sendToChatGPT(result, () => resultObservedInChat(result));
+    const observed = await waitForObservedResult(result);
+    if (observed) {
+      await clearQueuedResult(sessionId, identity);
+      await confirmMissingDirectiveRecovery(sessionId);
+      return { ok: true as const };
+    }
+    if (sent.ok) {
+      await clearQueuedResult(sessionId, identity);
+      await confirmMissingDirectiveRecovery(sessionId);
+    }
     return sent;
   })();
 

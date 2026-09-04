@@ -17,6 +17,7 @@
     "lib/messages.ts",
     "lib/directive-lifecycle.ts",
     "lib/directive-stability.ts",
+    "lib/missing-directive-recovery.ts",
     "lib/conversation-session.ts",
     "lib/chatgpt-context.ts",
     "lib/chatgpt-exec.ts",

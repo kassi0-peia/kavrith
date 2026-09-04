@@ -1,3 +1,5 @@
+import { preferredCodeMirrorDocumentText } from "../lib/chatgpt-code-block";
+
 type CodeMirrorDoc = {
   toString(): string;
 };
@@ -31,10 +33,13 @@ export default defineContentScript({
       const pre = document.querySelector<HTMLElement>(
         `pre[${BLOCK_ID_ATTRIBUTE}="${CSS.escape(requestId)}"]`,
       );
-      const content = pre?.querySelector<CodeMirrorContent>(
-        READONLY_TEXTBOX_SELECTOR,
-      );
-      const text = content?.cmTile?.view?.state?.doc?.toString();
+      const contents = pre
+        ? [...pre.querySelectorAll<CodeMirrorContent>(READONLY_TEXTBOX_SELECTOR)]
+        : [];
+      const documents = contents
+        .map((content) => content.cmTile?.view?.state?.doc?.toString())
+        .filter((text): text is string => typeof text === "string");
+      const text = preferredCodeMirrorDocumentText(documents);
 
       window.dispatchEvent(
         new CustomEvent(RESPONSE_EVENT, {

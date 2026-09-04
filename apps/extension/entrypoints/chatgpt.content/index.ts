@@ -1,6 +1,7 @@
 import { syncKavrithSessionForCurrentPage } from "../../lib/kavrith-session";
 import { deferredPrimeDecision } from "../../lib/directive-stability";
 import { ensureChatInitializer } from "./initializer";
+import { maybeRecoverMissingVisibleDirectiveForMessage } from "./missing-directive-recovery";
 import {
   assistantMessageForNode,
   inspect,
@@ -111,6 +112,7 @@ export default defineContentScript({
 
       for (const message of pendingAssistantMessages) {
         inspect(message);
+        await maybeRecoverMissingVisibleDirectiveForMessage(message);
       }
       pendingAssistantMessages.clear();
     }

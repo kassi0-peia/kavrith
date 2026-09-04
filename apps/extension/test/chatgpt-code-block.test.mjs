@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   directiveCodeSnapshot,
   directiveCodeText,
+  directiveSnapshotReadyForParsing,
   isUnprocessedCodeBlock,
+  preferredCodeMirrorDocumentText,
   preferredDirectiveCodeText,
 } from "../dist-test/lib/chatgpt-code-block.js";
 import { parseKavrithGit } from "../dist-test/lib/chatgpt-git.js";
@@ -137,5 +139,55 @@ test("does not prefer a divergent candidate with the same directive marker", () 
       "# kavrith:run\necho different and much longer",
     ),
     "# kavrith:run\necho expected",
+  );
+});
+
+test("CodeMirror reader prefers the longest compatible document", () => {
+  assert.equal(
+    preferredCodeMirrorDocumentText([
+      "# kavrith:run\nset -e",
+      "# kavrith:run\nset -e\nprintf 'done\\n'",
+    ]),
+    "# kavrith:run\nset -e\nprintf 'done\\n'",
+  );
+});
+
+test("CodeMirror reader rejects divergent editor documents", () => {
+  assert.equal(
+    preferredCodeMirrorDocumentText([
+      "# kavrith:run\necho stale",
+      "# kavrith:run\necho current",
+    ]),
+    undefined,
+  );
+});
+
+test("CodeMirror reader ignores empty stale editor nodes", () => {
+  assert.equal(
+    preferredCodeMirrorDocumentText([
+      "",
+      "  ",
+      "# kavrith:git-status",
+    ]),
+    "# kavrith:git-status",
+  );
+});
+
+test("never parses a non-authoritative CodeMirror Kavrith fragment", () => {
+  assert.equal(
+    directiveSnapshotReadyForParsing({
+      text: "# kavrith:run\nset -e",
+      authoritative: false,
+      editorBacked: true,
+    }),
+    false,
+  );
+  assert.equal(
+    directiveSnapshotReadyForParsing({
+      text: "# kavrith:run\nset -e",
+      authoritative: true,
+      editorBacked: true,
+    }),
+    true,
   );
 });
