@@ -708,6 +708,32 @@ test("runs an approved generic command in the registered workspace", async () =>
   }
 });
 
+test("accepts command.run payloads larger than 8000 characters", async () => {
+  const response = await handleRequest({
+    version: PROTOCOL_VERSION,
+    id: "run-large",
+    method: "command.run",
+    rootPath: workspacePath,
+    command: `printf ok\n#${"x".repeat(8_100)}`,
+  });
+  assert.equal(response.ok, true);
+  if (response.ok && "command" in response.result) {
+    assert.equal(response.result.stdout, "ok");
+  }
+});
+
+test("rejects command.run payloads beyond 65536 characters", async () => {
+  const response = await handleRequest({
+    version: PROTOCOL_VERSION,
+    id: "run-too-large",
+    method: "command.run",
+    rootPath: workspacePath,
+    command: "x".repeat(65_537),
+  });
+  assert.equal(response.ok, false);
+  if (!response.ok) assert.match(response.error.message, /65536/);
+});
+
 test("executes a structured command without shell interpretation", async () => {
   const response = await handleRequest({
     version: PROTOCOL_VERSION,
@@ -826,6 +852,51 @@ test("host wrapper handles multiple messages before stdin closes", async () => {
       result: { message: "pong" },
     },
   ]);
+});
+
+
+test("host wrapper does not block ping behind repository work", async () => {
+  const child = spawn(new URL("../run-host.sh", import.meta.url).pathname, [], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { PATH: "/usr/bin:/bin" },
+  });
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+
+  child.stdin.end(
+    Buffer.concat([
+      encodeMessage({
+        version: PROTOCOL_VERSION,
+        id: "slow-root-command",
+        method: "command.run",
+        rootPath: workspacePath,
+        command: "sleep 0.25",
+      }),
+      encodeMessage({
+        version: PROTOCOL_VERSION,
+        id: "health-ping",
+        method: "ping",
+      }),
+    ]),
+  );
+
+  const exitCode = await new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  assert.equal(exitCode, 0, Buffer.concat(stderr).toString("utf8"));
+
+  const responses = new MessageDecoder().push(Buffer.concat(stdout));
+  assert.deepEqual(
+    responses.map((response) => {
+      assert.equal(typeof response, "object");
+      assert.notEqual(response, null);
+      return (response as { id?: unknown }).id;
+    }),
+    ["health-ping", "slow-root-command"],
+  );
 });
 
 test("reports missing task roots consistently across host domains", async () => {

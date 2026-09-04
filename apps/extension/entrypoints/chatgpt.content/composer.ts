@@ -1,4 +1,6 @@
 import {
+  composerMatchesExpected,
+  composerRecoveryDecision,
   composerRollbackDecision,
   firstUsableCandidate,
 } from "../../lib/composer-delivery";
@@ -10,14 +12,91 @@ const COMPOSER_SELECTORS = [
 ] as const;
 
 type Composer = HTMLElement | HTMLTextAreaElement;
-const SEND_READY_TIMEOUT_MS = 15_000;
+const SEND_READY_TIMEOUT_MS = 30_000;
+const COMPOSER_STABLE_MS = 300;
+const COMPOSER_STABLE_TIMEOUT_MS = 2_000;
+const COMPOSER_RESYNC_MS = 1_000;
+const DELIVERY_POLL_MIN_MS = 40;
+const DELIVERY_POLL_MAX_MS = 250;
+const DELIVERY_POLL_RAMP_MS = 5_000;
+const COMPOSER_SELECTOR = COMPOSER_SELECTORS.join(",");
+const SEND_BUTTON_SELECTOR = [
+  "button[data-testid='send-button']",
+  "button[data-testid='composer-submit-button']",
+  "button[aria-label='Send prompt']",
+  "button[aria-label='Send']",
+  "button[aria-label='Send message']",
+  "button[type='submit']",
+].join(",");
+const USER_EDIT_EVENTS = [
+  "keydown",
+  "paste",
+  "drop",
+  "cut",
+  "compositionstart",
+] as const;
+
+function composerIsUsable(element: HTMLElement): element is Composer {
+  if (!element.isConnected || element.getClientRects().length === 0) return false;
+  if (element instanceof HTMLTextAreaElement) {
+    return !element.disabled && !element.readOnly;
+  }
+  return element.isContentEditable;
+}
 
 function findComposer(): Composer | undefined {
   for (const selector of COMPOSER_SELECTORS) {
-    const element = document.querySelector<HTMLElement>(selector);
-    if (element instanceof HTMLTextAreaElement || element?.isContentEditable)
-      return element;
+    const element = firstUsableCandidate(
+      document.querySelectorAll<HTMLElement>(selector),
+      composerIsUsable,
+    );
+    if (element) return element;
   }
+  return undefined;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
+}
+
+function deliveryPollDelay(startedAt: number): number {
+  const elapsed = Math.max(0, performance.now() - startedAt);
+  const progress = Math.min(1, elapsed / DELIVERY_POLL_RAMP_MS);
+  return Math.round(
+    DELIVERY_POLL_MIN_MS +
+      (DELIVERY_POLL_MAX_MS - DELIVERY_POLL_MIN_MS) * progress,
+  );
+}
+
+function waitForDeliveryPoll(startedAt: number): Promise<void> {
+  return delay(deliveryPollDelay(startedAt));
+}
+
+async function waitForStableComposer(): Promise<Composer | undefined> {
+  const deadline = performance.now() + COMPOSER_STABLE_TIMEOUT_MS;
+  let candidate: Composer | undefined;
+  let candidateSince = 0;
+
+  while (performance.now() < deadline) {
+    const current = findComposer();
+    const now = performance.now();
+
+    if (current !== candidate) {
+      candidate = current;
+      candidateSince = current ? now : 0;
+    } else if (
+      current &&
+      candidateSince > 0 &&
+      now - candidateSince >= COMPOSER_STABLE_MS
+    ) {
+      return current;
+    }
+
+    await delay(40);
+  }
+
   return undefined;
 }
 
@@ -25,6 +104,24 @@ function composerText(composer: Composer): string {
   return composer instanceof HTMLTextAreaElement
     ? composer.value
     : composer.innerText;
+}
+
+function findSendButton(composer: Composer): HTMLButtonElement | undefined {
+  const form = composer.closest("form");
+  if (form) {
+    const button = firstUsableCandidate(
+      form.querySelectorAll<HTMLButtonElement>(SEND_BUTTON_SELECTOR),
+      (candidate) =>
+        !candidate.disabled && candidate.getClientRects().length > 0,
+    );
+    if (button) return button;
+  }
+
+  return firstUsableCandidate(
+    document.querySelectorAll<HTMLButtonElement>(SEND_BUTTON_SELECTOR),
+    (candidate) =>
+      !candidate.disabled && candidate.getClientRects().length > 0,
+  );
 }
 
 function dispatchInput(composer: Composer, value: string): void {
@@ -36,6 +133,11 @@ function dispatchInput(composer: Composer, value: string): void {
     }),
   );
   composer.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function resyncComposerState(composer: Composer): void {
+  composer.focus();
+  dispatchInput(composer, composerText(composer));
 }
 
 function writeTextarea(composer: HTMLTextAreaElement, value: string): void {
@@ -65,15 +167,9 @@ function writeComposer(composer: Composer, value: string): void {
 }
 
 function appendToComposer(
+  composer: Composer,
   result: string,
 ): { ok: true } | { ok: false; message: string } {
-  const composer = findComposer();
-  if (!composer)
-    return {
-      ok: false,
-      message: "ChatGPT composer not found. Open a conversation and try again.",
-    };
-
   const existing = composerText(composer);
   const value =
     existing.trim().length === 0 ? result : `${existing}\n\n${result}`;
@@ -92,7 +188,7 @@ function appendToComposer(
 export async function sendToChatGPT(
   result: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  let composer = findComposer();
+  let composer = await waitForStableComposer();
   if (!composer) {
     return {
       ok: false,
@@ -101,7 +197,8 @@ export async function sendToChatGPT(
     };
   }
   const original = composerText(composer);
-  if (original.trim().length > 0) {
+  const resultAlreadyPresent = composerMatchesExpected(result, original);
+  if (original.trim().length > 0 && !resultAlreadyPresent) {
     return {
       ok: false,
       message:
@@ -109,64 +206,178 @@ export async function sendToChatGPT(
     };
   }
 
-  const insertion = appendToComposer(result);
-  if (!insertion.ok) return insertion;
-
-  const selector = [
-    "button[data-testid='send-button']",
-    "button[aria-label='Send prompt']",
-    "button[aria-label='Send']",
-    "button[aria-label='Send message']",
-  ].join(",");
-  const deadline = performance.now() + SEND_READY_TIMEOUT_MS;
-
-  while (performance.now() < deadline) {
-    const currentComposer = findComposer();
-    if (!currentComposer) {
-      await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => resolve()),
-      );
-      continue;
+  let userEdited = false;
+  let kavrithWriting = false;
+  const onUserEditIntent = (event: Event): void => {
+    if (!event.isTrusted) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.matches(COMPOSER_SELECTOR) || target.closest(COMPOSER_SELECTOR)) {
+      userEdited = true;
     }
-
-    composer = currentComposer;
-    const send = firstUsableCandidate(
-      document.querySelectorAll<HTMLButtonElement>(selector),
-      (button) => !button.disabled && button.getClientRects().length > 0,
-    );
-    if (send) {
-      send.click();
-      return { ok: true };
-    }
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => resolve()),
-    );
+  };
+  for (const type of USER_EDIT_EVENTS) {
+    document.addEventListener(type, onUserEditIntent as EventListener, true);
   }
 
-  // Sending failed after Kavrith inserted the result. Roll back only if the
-  // composer still contains exactly our insertion; never overwrite user edits.
-  if (
-    composerRollbackDecision(original, result, composerText(composer)) ===
-    "restore"
-  ) {
+  let expectedComposerText = resultAlreadyPresent ? original : "";
+  const writeResult = (
+    target: Composer,
+  ): { ok: true } | { ok: false; message: string } => {
+    kavrithWriting = true;
     try {
-      writeComposer(composer, original);
-    } catch {
+      const insertion = appendToComposer(target, result);
+      if (insertion.ok) {
+        // ChatGPT's rich editor may normalize the raw string as it is inserted.
+        // Treat the text we immediately read back from the live composer as the
+        // canonical Kavrith insertion for subsequent remount/change detection.
+        expectedComposerText = composerText(target);
+      }
+      return insertion;
+    } finally {
+      kavrithWriting = false;
+    }
+  };
+
+  try {
+    if (!resultAlreadyPresent) {
+      const insertion = writeResult(composer);
+      if (!insertion.ok) return insertion;
+    }
+
+    const deliveryStartedAt = performance.now();
+    const deadline = deliveryStartedAt + SEND_READY_TIMEOUT_MS;
+    let emptyComposer: Composer | undefined;
+    let emptySince = 0;
+    let lastResync = performance.now();
+    let lastComposer = composer;
+    let composerRemounts = 0;
+    let reinsertions = 0;
+    let resyncs = 0;
+
+    while (performance.now() < deadline) {
+      const currentComposer = findComposer();
+      if (!currentComposer) {
+        emptyComposer = undefined;
+        emptySince = 0;
+        await waitForDeliveryPoll(deliveryStartedAt);
+        continue;
+      }
+
+      if (currentComposer !== lastComposer) {
+        composerRemounts += 1;
+        lastComposer = currentComposer;
+      }
+      composer = currentComposer;
+      const recovery = composerRecoveryDecision(
+        expectedComposerText,
+        composerText(composer),
+        userEdited,
+      );
+      if (recovery === "abort") {
+        return {
+          ok: false,
+          message:
+            "Result queued — the composer changed before Kavrith could send it. Your draft was left untouched.",
+        };
+      }
+      if (recovery === "reinsert") {
+        const now = performance.now();
+        if (emptyComposer !== composer) {
+          emptyComposer = composer;
+          emptySince = now;
+          await waitForDeliveryPoll(deliveryStartedAt);
+          continue;
+        }
+        if (now - emptySince < COMPOSER_STABLE_MS) {
+          await waitForDeliveryPoll(deliveryStartedAt);
+          continue;
+        }
+        const reinsertion = writeResult(composer);
+        if (!reinsertion.ok) return reinsertion;
+        reinsertions += 1;
+        emptyComposer = undefined;
+        emptySince = 0;
+      } else {
+        emptyComposer = undefined;
+        emptySince = 0;
+      }
+
+      const send = findSendButton(composer);
+      if (send) {
+        send.click();
+        return { ok: true };
+      }
+
+      const now = performance.now();
+      if (
+        recovery === "keep" &&
+        !userEdited &&
+        now - lastResync >= COMPOSER_RESYNC_MS
+      ) {
+        // ChatGPT can mount the visible rich editor before its application
+        // listeners are fully ready. Re-announce the unchanged editor value so
+        // a late-attached listener can synchronize state and enable Send.
+        resyncComposerState(composer);
+        lastResync = now;
+        resyncs += 1;
+      }
+
+      await waitForDeliveryPoll(deliveryStartedAt);
+    }
+
+    const finalComposer = findComposer() ?? composer;
+    const finalRecovery = composerRecoveryDecision(
+      expectedComposerText,
+      composerText(finalComposer),
+      userEdited,
+    );
+    if (finalRecovery === "abort") {
       return {
         ok: false,
-        message: "Result queued — ChatGPT wasn't ready to send it.",
+        message:
+          "Result queued — the composer changed before Kavrith could send it. Your draft was left untouched.",
       };
     }
-  } else {
+
+    // Sending failed after Kavrith inserted the result. Roll back only if the
+    // active composer still contains exactly our insertion; never overwrite
+    // user edits. If ChatGPT already reset it to empty, there is nothing to undo.
+    if (
+      finalRecovery === "keep" &&
+      composerRollbackDecision(
+        original,
+        expectedComposerText,
+        composerText(finalComposer),
+      ) === "restore"
+    ) {
+      try {
+        kavrithWriting = true;
+        writeComposer(finalComposer, original);
+      } catch {
+        return {
+          ok: false,
+          message: "Result queued — ChatGPT wasn't ready to send it.",
+        };
+      } finally {
+        kavrithWriting = false;
+      }
+    }
+
     return {
       ok: false,
       message:
-        "Result queued — the composer changed before Kavrith could send it. Your draft was left untouched.",
+        `Result queued — ChatGPT's send control never became ready after ${Math.round(
+          (performance.now() - deliveryStartedAt) / 1_000,
+        )}s (composer remounts: ${composerRemounts}, reinserts: ${reinsertions}, resyncs: ${resyncs}). Use Send result to retry.`,
     };
+  } finally {
+    for (const type of USER_EDIT_EVENTS) {
+      document.removeEventListener(
+        type,
+        onUserEditIntent as EventListener,
+        true,
+      );
+    }
   }
-
-  return {
-    ok: false,
-    message: "Result queued — ChatGPT wasn't ready. Use Send result to retry.",
-  };
 }

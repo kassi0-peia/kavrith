@@ -1,3 +1,5 @@
+import { MAX_RUN_COMMAND_LENGTH } from "./chatgpt-run.js";
+
 export interface KavrithDirectiveParseError {
   type:
     | "read"
@@ -90,6 +92,15 @@ export function kavrithDirectiveParseError(
   }
 
   if (/^# kavrith:run(?:\s|$)/.test(firstLine)) {
+    if (firstLine === "# kavrith:run") {
+      const command = normalized.slice(firstLine.length).trim();
+      if (command.length > MAX_RUN_COMMAND_LENGTH) {
+        return {
+          type: "run",
+          message: `Malformed kavrith:run directive: command is ${command.length} characters; maximum is ${MAX_RUN_COMMAND_LENGTH}. Split very large work into smaller commands or stage a script/file.`,
+        };
+      }
+    }
     return {
       type: "run",
       message: [

@@ -89,24 +89,28 @@ export function directiveId(
     "[data-message-id], [data-testid^='conversation-turn-']",
   );
   const stableTurnIdentity = turn?.dataset.messageId ?? turn?.dataset.testid;
-  const assistantTurns = [
-    ...document.querySelectorAll<HTMLElement>(
-      "[data-message-author-role='assistant']",
-    ),
-  ];
-  const assistantTurnIndex = assistantTurns.indexOf(message);
-  if (assistantTurnIndex < 0) return undefined;
+  let turnIdentity: string | number | undefined = stableTurnIdentity;
+
+  // Modern ChatGPT turns normally expose a stable message/test id. Avoid a
+  // document-wide assistant-turn scan in that common case: on very long
+  // conversations that query is unnecessarily expensive for every directive.
+  if (turnIdentity === undefined) {
+    const assistantTurns = [
+      ...document.querySelectorAll<HTMLElement>(
+        "[data-message-author-role='assistant']",
+      ),
+    ];
+    const assistantTurnIndex = assistantTurns.indexOf(message);
+    if (assistantTurnIndex < 0) return undefined;
+    turnIdentity = assistantTurnIndex;
+  }
+
   const pre = code.closest("pre");
   if (!pre) return undefined;
   const codes = [...message.querySelectorAll<HTMLElement>("pre")];
   const codeIndex = codes.indexOf(pre);
   if (codeIndex < 0) return undefined;
-  return directiveOccurrenceId(
-    stableTurnIdentity ?? assistantTurnIndex,
-    codeIndex,
-    type,
-    text,
-  );
+  return directiveOccurrenceId(turnIdentity, codeIndex, type, text);
 }
 
 async function getLifecycleMap(): Promise<DirectiveLifecycleByChat> {

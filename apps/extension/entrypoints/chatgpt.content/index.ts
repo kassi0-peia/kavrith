@@ -13,6 +13,7 @@ export default defineContentScript({
   runAt: "document_idle",
   main() {
     let activeSessionId: string | undefined;
+    let lastSessionHref = location.href;
     let pendingInitialPrime = false;
     let rescanTimer: number | undefined;
     const pendingAssistantMessages = new Set<HTMLElement>();
@@ -20,13 +21,13 @@ export default defineContentScript({
     const assistantIsGenerating = (): boolean => {
       const selectors = [
         "button[data-testid='stop-button']",
-        "button[aria-label='Stop generating']",
-        "button[aria-label='Stop']",
+        "button[aria-label^='Stop']",
       ];
-      return selectors.some((selector) => {
-        const button = document.querySelector<HTMLElement>(selector);
-        return Boolean(button && button.getClientRects().length > 0);
-      });
+      return selectors.some((selector) =>
+        [...document.querySelectorAll<HTMLElement>(selector)].some(
+          (button) => button.getClientRects().length > 0,
+        ),
+      );
     };
 
     const scheduleRescan = (delay: number): void => {
@@ -38,6 +39,7 @@ export default defineContentScript({
 
     const syncSession = async (): Promise<void> => {
       const sessionId = await syncKavrithSessionForCurrentPage();
+      lastSessionHref = location.href;
       if (activeSessionId !== sessionId) {
         activeSessionId = sessionId;
         pendingInitialPrime = true;
@@ -57,6 +59,26 @@ export default defineContentScript({
       // The ChatGPT composer can mount after document_idle. Retry rendering on
       // later DOM mutations even when the logical Kavrith session is unchanged.
       ensureChatInitializer();
+    };
+
+    const nodeTouchesCodeBlock = (node: Node): boolean => {
+      const element = node instanceof Element ? node : node.parentElement;
+      if (!element) return false;
+      return Boolean(
+        element.closest("pre") ||
+          (element instanceof HTMLElement &&
+            element.querySelector("pre") !== null),
+      );
+    };
+
+    const nodeTouchesComposer = (node: Node): boolean => {
+      const element = node instanceof Element ? node : node.parentElement;
+      if (!element) return false;
+      return Boolean(
+        element.matches?.("#prompt-textarea") ||
+          (element instanceof HTMLElement &&
+            element.querySelector("#prompt-textarea") !== null),
+      );
     };
 
     async function scanWhenStable(): Promise<void> {
@@ -83,33 +105,35 @@ export default defineContentScript({
 
     new MutationObserver((records) => {
       const changedAssistantMessages = new Set<HTMLElement>();
+      let composerChanged = false;
 
       for (const record of records) {
         if (record.type === "characterData") {
-          const message = assistantMessageForNode(record.target);
-          if (message?.querySelector("pre")) {
-            changedAssistantMessages.add(message);
+          if (nodeTouchesCodeBlock(record.target)) {
+            const message = assistantMessageForNode(record.target);
+            if (message) changedAssistantMessages.add(message);
           }
         }
 
         for (const node of record.addedNodes) {
-          const message = assistantMessageForNode(node);
-          if (!message) continue;
+          if (nodeTouchesComposer(node)) composerChanged = true;
 
-          const containsCode =
-            node instanceof HTMLElement
-              ? node.matches("pre") ||
-                node.querySelector("pre") !== null ||
-                message.querySelector("pre") !== null
-              : message.querySelector("pre") !== null;
-
-          if (containsCode) {
-            changedAssistantMessages.add(message);
+          if (nodeTouchesCodeBlock(node)) {
+            const message = assistantMessageForNode(node);
+            if (message) changedAssistantMessages.add(message);
           }
         }
       }
 
-      void syncSession();
+      // ChatGPT is a SPA. Conversation navigation changes the URL, but most
+      // ordinary DOM churn does not require another storage-backed session sync.
+      if (location.href !== lastSessionHref) {
+        void syncSession();
+      } else if (composerChanged) {
+        // Reposition/recreate Kavrith when ChatGPT replaces the composer without
+        // paying for another conversation/session lookup.
+        ensureChatInitializer();
+      }
 
       if (changedAssistantMessages.size === 0) return;
 

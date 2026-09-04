@@ -10,6 +10,7 @@ import {
 import {
   addComposerAction,
   getOutbox,
+  resumeQueuedResult,
   returnResultToChatGPT,
 } from "./result-delivery";
 import {
@@ -201,8 +202,9 @@ export async function restoreQueuedResults(): Promise<void> {
 
     const controls = createControls();
     addComposerAction(controls, identity, queued.result);
+    resumeQueuedResult(identity, queued.result);
     const status = document.createElement("span");
-    status.textContent = "Kavrith result is queued for delivery.";
+    status.textContent = "Kavrith result is queued and retrying automatically.";
     status.style.cssText = "font:12px system-ui,sans-serif;color:#7f1d1d;";
     controls.append(status);
     pre.append(controls);

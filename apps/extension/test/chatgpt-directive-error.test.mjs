@@ -50,6 +50,13 @@ test("reports malformed exec and run directives", () => {
   assert.match(run?.message ?? "", /following line/i);
 });
 
+test("reports the actual limit for oversized run directives", () => {
+  const error = kavrithDirectiveParseError(`# kavrith:run\n${"x".repeat(65_537)}`);
+  assert.equal(error?.type, "run");
+  assert.match(error?.message ?? "", /65537 characters/i);
+  assert.match(error?.message ?? "", /maximum is 65536/i);
+});
+
 test("reports malformed git and search directives", () => {
   const status = kavrithDirectiveParseError("# kavrith:git-status\nextra");
   assert.equal(status?.type, "git-status");

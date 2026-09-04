@@ -9,18 +9,39 @@ import { routeBackgroundMessage } from "../lib/background-routing";
 import { getChatInitialization } from "../lib/chat-initialization";
 
 const HOST_NAME = "com.kavrith.host";
+const NATIVE_STALL_CHECK_MS = 15_000;
+const NATIVE_HEALTH_TIMEOUT_MS = 5_000;
 let port: ReturnType<typeof browser.runtime.connectNative> | undefined;
+let healthCheck: Promise<boolean> | undefined;
 const pending = new Map<
   string,
   {
     resolve: (response: NativeResponse) => void;
     reject: (reason: Error) => void;
+    watchdog?: ReturnType<typeof setTimeout>;
   }
 >();
 
 function rejectPending(message: string): void {
-  for (const { reject } of pending.values()) reject(new Error(message));
+  for (const { reject, watchdog } of pending.values()) {
+    if (watchdog !== undefined) clearTimeout(watchdog);
+    reject(new Error(message));
+  }
   pending.clear();
+}
+
+function disconnectPort(
+  connectedPort: ReturnType<typeof browser.runtime.connectNative>,
+  message: string,
+): void {
+  if (port !== connectedPort) return;
+  port = undefined;
+  rejectPending(message);
+  try {
+    connectedPort.disconnect();
+  } catch {
+    // The native port may already be gone.
+  }
 }
 
 function getPort(): ReturnType<typeof browser.runtime.connectNative> {
@@ -33,6 +54,7 @@ function getPort(): ReturnType<typeof browser.runtime.connectNative> {
     if (typeof response.id !== "string") return;
     const request = pending.get(response.id);
     if (!request) return;
+    if (request.watchdog !== undefined) clearTimeout(request.watchdog);
     pending.delete(response.id);
     request.resolve(message as NativeResponse);
   });
@@ -46,8 +68,12 @@ function getPort(): ReturnType<typeof browser.runtime.connectNative> {
       browser.runtime.lastError?.message ??
       "Native host disconnected";
     console.error("Kavrith local host disconnected:", message);
-    port = undefined;
-    rejectPending(message);
+    // Ignore a late disconnect from an old port after a replacement has
+    // already been established.
+    if (port === connectedPort) {
+      port = undefined;
+      rejectPending(message);
+    }
   });
   return port;
 }
@@ -58,19 +84,90 @@ type NativeRequestInput = NativeRequest extends infer Request
     : never
   : never;
 
-function sendNative(input: NativeRequestInput): Promise<NativeResponse> {
+function sendNativeDirect(
+  input: NativeRequestInput,
+  watchdog = true,
+): Promise<NativeResponse> {
   const id = crypto.randomUUID();
   const request = { ...input, version: PROTOCOL_VERSION, id } as NativeRequest;
 
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    const entry: {
+      resolve: (response: NativeResponse) => void;
+      reject: (reason: Error) => void;
+      watchdog?: ReturnType<typeof setTimeout>;
+    } = { resolve, reject };
+    pending.set(id, entry);
+
+    if (watchdog) {
+      entry.watchdog = setTimeout(() => {
+        void handleStalledRequest(id);
+      }, NATIVE_STALL_CHECK_MS);
+    }
+
     try {
       getPort().postMessage(request);
     } catch (cause) {
+      if (entry.watchdog !== undefined) clearTimeout(entry.watchdog);
       pending.delete(id);
       reject(cause instanceof Error ? cause : new Error(String(cause)));
     }
   });
+}
+
+async function nativePortIsHealthy(): Promise<boolean> {
+  if (healthCheck) return healthCheck;
+  const connectedPort = port;
+  if (!connectedPort) return false;
+
+  healthCheck = (async () => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const timeoutResult = new Promise<boolean>((resolve) => {
+      timeout = setTimeout(() => resolve(false), NATIVE_HEALTH_TIMEOUT_MS);
+    });
+    const pingResult = sendNativeDirect({ method: "ping" }, false).then(
+      () => port === connectedPort,
+      () => false,
+    );
+
+    const healthy = await Promise.race([pingResult, timeoutResult]);
+    if (timeout !== undefined) clearTimeout(timeout);
+
+    if (!healthy && port === connectedPort) {
+      const message =
+        `Native host became unresponsive: health check did not complete within ` +
+        `${NATIVE_HEALTH_TIMEOUT_MS} ms. Kavrith reset the connection.`;
+      console.error(message);
+      disconnectPort(connectedPort, message);
+    }
+    return healthy;
+  })().finally(() => {
+    healthCheck = undefined;
+  });
+
+  return healthCheck;
+}
+
+async function handleStalledRequest(id: string): Promise<void> {
+  const request = pending.get(id);
+  if (!request) return;
+  delete request.watchdog;
+
+  const healthy = await nativePortIsHealthy();
+  const current = pending.get(id);
+  if (!current) return;
+
+  if (healthy) {
+    // The host is alive; this may simply be a legitimate long-running command.
+    // Keep waiting and probe again later rather than aborting valid work.
+    current.watchdog = setTimeout(() => {
+      void handleStalledRequest(id);
+    }, NATIVE_STALL_CHECK_MS);
+  }
+}
+
+function sendNative(input: NativeRequestInput): Promise<NativeResponse> {
+  return sendNativeDirect(input, true);
 }
 
 async function taskRoot(sessionId?: string): Promise<string> {

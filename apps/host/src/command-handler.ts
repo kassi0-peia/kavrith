@@ -6,6 +6,8 @@ import {
   taskRootErrorResponse,
 } from "./request-helpers.js";
 
+const MAX_RUN_COMMAND_LENGTH = 65_536;
+
 export async function handleCommandRequest(
   id: string,
   request: Record<string, unknown>,
@@ -78,13 +80,13 @@ export async function handleCommandRequest(
     }
     if (
       !request.command.trim() ||
-      request.command.length > 8_000 ||
+      request.command.length > MAX_RUN_COMMAND_LENGTH ||
       request.command.includes("\0")
     ) {
       return error(
         id,
         "INVALID_REQUEST",
-        "command must be non-empty, at most 8000 characters, and contain no NUL bytes",
+        `command must be non-empty, at most ${MAX_RUN_COMMAND_LENGTH} characters, and contain no NUL bytes`,
       );
     }
     try {

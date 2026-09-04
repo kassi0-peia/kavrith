@@ -377,9 +377,7 @@ function createInitializer(sessionId: string): HTMLDivElement {
 }
 
 export function ensureChatInitializer(): void {
-  void syncKavrithSessionForCurrentPage().then(() => {
-    renderChatInitializer();
-  });
+  renderChatInitializer();
 }
 
 function renderChatInitializer(): void {
