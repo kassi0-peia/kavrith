@@ -188,11 +188,18 @@ test("send acceptance requires ChatGPT to consume the queued result", () => {
   );
   assert.equal(
     composerSendAcceptanceDecision("queued result", ""),
-    "accepted",
+    "pending",
   );
   assert.equal(
     composerSendAcceptanceDecision("queued result", "new user draft"),
     "changed",
+  );
+});
+
+test("an observed user turn is required to acknowledge an emptied composer", () => {
+  assert.equal(
+    composerSendAcceptanceDecision("queued result", "", "queued result", true),
+    "accepted",
   );
 });
 

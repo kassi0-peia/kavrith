@@ -138,6 +138,19 @@ function findSendButton(composer: Composer): HTMLButtonElement | undefined {
   );
 }
 
+function clearDeliveredResultResidue(result: string): void {
+  const composer = findComposer();
+  if (!composer) return;
+  if (!composerMatchesExpected(result, composerText(composer))) return;
+  try {
+    writeComposer(composer, "");
+  } catch {
+    // Delivery is already confirmed by the visible user turn. A residue that
+    // cannot be cleared is annoying but must not turn successful delivery into
+    // a failed/duplicate send.
+  }
+}
+
 async function waitForSendAcceptance(
   expectedComposerText: string,
   sourceResult: string,
@@ -151,9 +164,12 @@ async function waitForSendAcceptance(
 
   while (performance.now() < deadline) {
     const observed = resultObserved?.() ?? false;
+    if (observed) {
+      clearDeliveredResultResidue(sourceResult);
+      return { ok: true };
+    }
     const current = findComposer();
     if (!current) {
-      if (observed) return { ok: true };
       await delay(80);
       continue;
     }
@@ -285,6 +301,7 @@ export async function sendToChatGPT(
   }
 
   let expectedComposerText = resultAlreadyPresent ? original : "";
+  let lastComposerWriteAt = resultAlreadyPresent ? 0 : performance.now();
   const writeResult = (
     target: Composer,
   ): { ok: true } | { ok: false; message: string } => {
@@ -296,6 +313,7 @@ export async function sendToChatGPT(
         // Treat the text we immediately read back from the live composer as the
         // canonical Kavrith insertion for subsequent remount/change detection.
         expectedComposerText = composerText(target);
+        lastComposerWriteAt = performance.now();
       }
       return insertion;
     } finally {
@@ -368,7 +386,16 @@ export async function sendToChatGPT(
       }
 
       const send = findSendButton(composer);
-      if (send) {
+      const now = performance.now();
+      if (
+        send &&
+        (lastComposerWriteAt === 0 ||
+          now - lastComposerWriteAt >= COMPOSER_STABLE_MS)
+      ) {
+        // The contenteditable DOM can change before ChatGPT's internal editor
+        // state catches up. Clicking Send in the same task as insertion can
+        // clear the visible composer without creating a user turn. Give the
+        // application one stable window after every write/reinsertion first.
         send.click();
         return await waitForSendAcceptance(
           expectedComposerText,
@@ -377,7 +404,6 @@ export async function sendToChatGPT(
         );
       }
 
-      const now = performance.now();
       if (
         recovery === "keep" &&
         !userEdited &&
@@ -388,6 +414,7 @@ export async function sendToChatGPT(
         // a late-attached listener can synchronize state and enable Send.
         resyncComposerState(composer);
         lastResync = now;
+        lastComposerWriteAt = now;
         resyncs += 1;
       }
 

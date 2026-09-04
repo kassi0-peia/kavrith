@@ -66,7 +66,10 @@ export function composerSendAcceptanceDecision(
   ) {
     return "pending";
   }
-  return normalizedComposerText(current).length === 0 ? "accepted" : "changed";
+  // ChatGPT may clear/remount the composer after a synthetic Send click even
+  // when no user turn was actually created. Composer consumption alone is not
+  // delivery acknowledgement; only an observed matching user turn is.
+  return normalizedComposerText(current).length === 0 ? "pending" : "changed";
 }
 
 export function composerRollbackDecision(
