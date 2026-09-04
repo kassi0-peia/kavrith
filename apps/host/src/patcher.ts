@@ -163,7 +163,8 @@ function parsePatch(patch: string): PatchFile[] {
   const files: PatchFile[] = [];
   let current: PatchFile | undefined;
   let hunk: string[] | undefined;
-  for (const line of lines.slice(1, -1)) {
+  for (const [offset, line] of lines.slice(1, -1).entries()) {
+    const lineNumber = offset + 2;
     const header = /^\*\*\* (Update|Add) File: (.+)$/.exec(line);
     if (header) {
       if (hunk) current?.hunks.push(hunk);
@@ -182,8 +183,18 @@ function parsePatch(patch: string): PatchFile[] {
       hunk = [];
       continue;
     }
-    if (!hunk || !/^[ +-]/.test(line))
-      throw new PatchError("malformed patch hunk");
+    if (!hunk && current?.kind === "add" && line.startsWith("+")) {
+      // The standard apply_patch form starts Add File content immediately with
+      // '+' lines; unlike Update File, it does not require an explicit @@
+      // header before the new file body.
+      hunk = [];
+    }
+    if (!hunk || !/^[ +-]/.test(line)) {
+      const preview = JSON.stringify(line.slice(0, 120));
+      throw new PatchError(
+        `malformed patch hunk at line ${lineNumber}: ${preview}`,
+      );
+    }
     hunk.push(line);
   }
   if (hunk) current?.hunks.push(hunk);

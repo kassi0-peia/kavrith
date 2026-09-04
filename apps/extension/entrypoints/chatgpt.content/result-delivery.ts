@@ -10,6 +10,7 @@ import {
 import { createAsyncMutationQueue } from "../../lib/async-mutation-queue";
 import { userTurnContainsDeliveredResult } from "../../lib/composer-delivery";
 import { kavrithSessionId } from "../../lib/kavrith-session";
+import { resultForChatGPTDelivery } from "../../lib/result-delivery-payload";
 import { sendToChatGPT } from "./composer";
 import { createActionButton, errorMessage } from "./result-ui";
 import {
@@ -312,15 +313,20 @@ export async function returnResultToChatGPT(
   identity: string,
   result: string,
 ): Promise<void> {
-  const sessionId = await queueResult(identity, result);
-  const sent = await attemptQueuedDelivery(sessionId, identity, result);
+  const deliveryResult = resultForChatGPTDelivery(result);
+  const sessionId = await queueResult(identity, deliveryResult);
+  const sent = await attemptQueuedDelivery(
+    sessionId,
+    identity,
+    deliveryResult,
+  );
   if (sent.ok) {
     return;
   }
 
-  addComposerAction(controls, identity, result, sent.message);
+  addComposerAction(controls, identity, deliveryResult, sent.message);
   if (sent.automaticRetry !== false) {
-    resumeQueuedResult(identity, result, false);
+    resumeQueuedResult(identity, deliveryResult, false);
   }
 }
 

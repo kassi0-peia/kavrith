@@ -13,3 +13,4 @@ sed "s|__HOST_PATH__|$HOST_PATH|g" "$ROOT_DIR/scripts/firefox-host-manifest.temp
 
 echo "Installed Firefox native host manifest:"
 echo "$MANIFEST_PATH"
+echo "If Kavrith is already loaded in Firefox, reload the temporary add-on or restart Firefox so its persistent native-messaging connection starts the updated host."

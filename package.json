@@ -14,6 +14,7 @@
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "build:firefox": "pnpm --filter @kavrith/protocol build && pnpm --filter @kavrith/host build && pnpm --filter @kavrith/extension build:firefox",
+    "stage:firefox": "sh ./scripts/stage-firefox-extension.sh",
     "build:chrome": "pnpm --filter @kavrith/protocol build && pnpm --filter @kavrith/host build && pnpm --filter @kavrith/extension build:chrome",
     "build:browsers": "pnpm --filter @kavrith/protocol build && pnpm --filter @kavrith/host build && pnpm --filter @kavrith/extension build:all",
     "dev:chrome": "pnpm --filter @kavrith/extension dev:chrome",

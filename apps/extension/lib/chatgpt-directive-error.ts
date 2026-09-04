@@ -124,6 +124,8 @@ export function kavrithDirectiveParseError(
         "@@",
         "-old",
         "+new",
+        "*** Add File: relative/new-file",
+        "+new file content",
         "*** End Patch",
       ].join("\n"),
     };

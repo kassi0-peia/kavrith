@@ -668,6 +668,60 @@ test("rolls back earlier files when a later patch commit fails", async () => {
   );
 });
 
+test("accepts Add File content without an explicit hunk header in a multi-file patch", async () => {
+  const updatePath = "implicit-add-update.txt";
+  const addPath = "implicit-add-created.txt";
+  await writeFile(join(workspacePath, updatePath), "before\n", "utf8");
+
+  const patch = [
+    "*** Begin Patch",
+    `*** Update File: ${updatePath}`,
+    "@@",
+    "-before",
+    "+after",
+    `*** Add File: ${addPath}`,
+    "+first",
+    "+second",
+    "*** End Patch",
+  ].join("\n");
+
+  const result = await applyWorkspacePatch(workspacePath, patch);
+
+  assert.deepEqual(result.filesChanged, [updatePath, addPath]);
+  assert.equal(
+    await readFile(join(workspacePath, updatePath), "utf8"),
+    "after\n",
+  );
+  assert.equal(
+    await readFile(join(workspacePath, addPath), "utf8"),
+    "first\nsecond\n",
+  );
+});
+
+test("reports the malformed patch line without echoing unbounded content", async () => {
+  const path = "malformed-line.txt";
+  await writeFile(join(workspacePath, path), "before\n", "utf8");
+  const longBadLine = `!${"x".repeat(500)}`;
+  const patch = [
+    "*** Begin Patch",
+    `*** Update File: ${path}`,
+    "@@",
+    "-before",
+    "+after",
+    longBadLine,
+    "*** End Patch",
+  ].join("\n");
+
+  await assert.rejects(
+    () => applyWorkspacePatch(workspacePath, patch),
+    (error: unknown) => {
+      assert.match(String(error), /malformed patch hunk at line 6/);
+      assert.ok(!String(error).includes("x".repeat(200)));
+      return true;
+    },
+  );
+});
+
 test("accepts standard unified patch hunk headers", async () => {
   const path = "standard-hunk-header.txt";
   const patch = [

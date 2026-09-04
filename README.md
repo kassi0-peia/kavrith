@@ -65,17 +65,20 @@ Build the extension and install the native host:
 ```sh
 pnpm build:firefox
 pnpm install:host:firefox
+pnpm stage:firefox
 ```
 
 Then:
 
 1. Open `about:debugging#/runtime/this-firefox`.
 2. Click **Load Temporary Add-on…**.
-3. Select `apps/extension/.output/firefox-mv2/manifest.json`.
+3. Select the manifest path printed by `pnpm stage:firefox`.
 4. Restart Firefox.
 5. Open ChatGPT.
 6. Click **Kavrith** in the composer.
 7. Choose a repository and an access mode.
+
+On Linux systems using Firefox from Snap, `pnpm stage:firefox` copies the extension into `~/snap/firefox/common/kavrith-extension-current` so Firefox can load its generated content scripts. On other supported setups it prints the normal WXT build manifest under `apps/extension/.output/firefox-mv2`.
 
 The host is installed at:
 
@@ -156,7 +159,11 @@ Kavrith directives are executable protocol messages. ChatGPT generates them as i
 
 ### Firefox cannot find the native host
 
-Run `pnpm install:host:firefox`, confirm that the Firefox Native Messaging manifest exists, then restart Firefox.
+Run `pnpm install:host:firefox`, confirm that the Firefox Native Messaging manifest exists, then reload the temporary Kavrith add-on or restart Firefox. Kavrith keeps a persistent Native Messaging connection while its background page is alive, so reinstalling the host files alone does not replace an already-running host process.
+
+### Firefox loads Kavrith but cannot load its content scripts
+
+Run `pnpm build:firefox` followed by `pnpm stage:firefox`, then load the manifest path printed by the staging command. This is required for Firefox Snap installations that cannot execute the unpacked extension directly from the repository build directory.
 
 ### Chrome cannot connect to the native host
 
