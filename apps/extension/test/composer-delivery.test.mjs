@@ -4,6 +4,7 @@ import {
   composerMatchesExpected,
   composerRecoveryDecision,
   composerRollbackDecision,
+  composerSendAcceptanceDecision,
   firstUsableCandidate,
 } from "../dist-test/lib/composer-delivery.js";
 
@@ -67,8 +68,55 @@ test("retry recognizes a queued Kavrith result already in the composer", () => {
   );
 });
 
+test("retry tolerates delayed rich-editor whitespace normalization", () => {
+  assert.equal(
+    composerMatchesExpected(
+      "<kavrith_result>\nline one\nline two\n</kavrith_result>",
+      "<kavrith_result> line one   line two </kavrith_result>",
+    ),
+    true,
+  );
+});
+
+test("rich-editor normalization does not look like a foreign draft", () => {
+  assert.equal(
+    composerRecoveryDecision(
+      "<kavrith_result>\nline one\nline two\n</kavrith_result>",
+      "<kavrith_result> line one line two </kavrith_result>",
+      false,
+    ),
+    "keep",
+  );
+});
+
+test("trusted editing still wins over whitespace-equivalent recovery", () => {
+  assert.equal(
+    composerRecoveryDecision(
+      "<kavrith_result>\nline one\nline two\n</kavrith_result>",
+      "",
+      true,
+    ),
+    "abort",
+  );
+});
+
 test("retry does not mistake a user draft for a queued result", () => {
   assert.equal(composerMatchesExpected("queued result", "my draft"), false);
+});
+
+test("send acceptance requires ChatGPT to consume the queued result", () => {
+  assert.equal(
+    composerSendAcceptanceDecision("queued result", "queued result"),
+    "pending",
+  );
+  assert.equal(
+    composerSendAcceptanceDecision("queued result", ""),
+    "accepted",
+  );
+  assert.equal(
+    composerSendAcceptanceDecision("queued result", "new user draft"),
+    "changed",
+  );
 });
 
 test("delivery compares against the editor-normalized insertion snapshot", () => {
@@ -76,6 +124,29 @@ test("delivery compares against the editor-normalized insertion snapshot", () =>
   assert.equal(
     composerRecoveryDecision(editorSnapshot, "line one\n\nline two", false),
     "keep",
+  );
+});
+
+test("delivery still owns the original result after a transient editor snapshot", () => {
+  assert.equal(
+    composerRecoveryDecision(
+      "transient editor snapshot",
+      "<kavrith_context> result </kavrith_context>",
+      false,
+      "<kavrith_context>\nresult\n</kavrith_context>",
+    ),
+    "keep",
+  );
+});
+
+test("send acceptance recognizes the original result after editor remount", () => {
+  assert.equal(
+    composerSendAcceptanceDecision(
+      "transient editor snapshot",
+      "<kavrith_result> result </kavrith_result>",
+      "<kavrith_result>\nresult\n</kavrith_result>",
+    ),
+    "pending",
   );
 });
 

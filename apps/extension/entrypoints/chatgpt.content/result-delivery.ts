@@ -15,7 +15,10 @@ const mutateOutbox = createAsyncMutationQueue();
 const automaticRetries = new Set<string>();
 const deliveryAttempts = new Map<
   string,
-  Promise<{ ok: true } | { ok: false; message: string }>
+  Promise<
+    | { ok: true }
+    | { ok: false; message: string; automaticRetry?: boolean }
+  >
 >();
 const AUTO_RETRY_MIN_MS = 2_000;
 const AUTO_RETRY_MAX_MS = 30_000;
@@ -80,7 +83,10 @@ async function attemptQueuedDelivery(
   sessionId: string,
   identity: string,
   result: string,
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<
+  | { ok: true }
+  | { ok: false; message: string; automaticRetry?: boolean }
+> {
   const key = retryKey(sessionId, identity);
   const existingAttempt = deliveryAttempts.get(key);
   if (existingAttempt) return existingAttempt;
@@ -115,6 +121,29 @@ async function attemptQueuedDelivery(
   return attempt;
 }
 
+async function attemptManualQueuedDelivery(
+  sessionId: string,
+  identity: string,
+  result: string,
+): Promise<
+  | { ok: true }
+  | { ok: false; message: string; automaticRetry?: boolean }
+> {
+  const key = retryKey(sessionId, identity);
+  const existing = deliveryAttempts.get(key);
+  if (existing) await existing;
+
+  const queued = pendingResult(await getOutbox(), sessionId, identity);
+  if (!queued) return { ok: true };
+  if (queued.result !== result) {
+    return {
+      ok: false,
+      message: "Kavrith's queued result changed; the newer result was left untouched.",
+    };
+  }
+  return attemptQueuedDelivery(sessionId, identity, result);
+}
+
 export function resumeQueuedResult(
   identity: string,
   result: string,
@@ -139,6 +168,7 @@ export function resumeQueuedResult(
         result,
       );
       if (sent.ok) return;
+      if (sent.automaticRetry === false) return;
 
       await delay(retryDelay(attemptNumber++));
     }
@@ -149,18 +179,24 @@ export function addComposerAction(
   controls: HTMLElement,
   identity: string,
   result: string,
+  initialStatus = "",
 ): void {
   const sessionId = kavrithSessionId();
   controls.hidden = false;
   const button = createActionButton("Send result");
   const status = document.createElement("span");
   status.style.cssText = "font:12px system-ui,sans-serif;color:#dc2626;";
+  status.textContent = initialStatus;
   controls.append(button, status);
 
   button.addEventListener("click", async () => {
     button.disabled = true;
     button.textContent = "Sending…";
-    const sent = await attemptQueuedDelivery(sessionId, identity, result);
+    const sent = await attemptManualQueuedDelivery(
+      sessionId,
+      identity,
+      result,
+    );
     if (!sent.ok) {
       status.textContent = sent.message;
       button.disabled = false;
@@ -183,11 +219,7 @@ export async function returnResultToChatGPT(
     return;
   }
 
-  addComposerAction(controls, identity, result);
-  const status = document.createElement("span");
-  status.textContent = sent.message;
-  status.style.cssText = "font:12px system-ui,sans-serif;color:#dc2626;";
-  controls.append(status);
+  addComposerAction(controls, identity, result, sent.message);
   resumeQueuedResult(identity, result, false);
 }
 

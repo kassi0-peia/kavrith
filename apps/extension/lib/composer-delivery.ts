@@ -1,11 +1,16 @@
 export type ComposerRollbackDecision = "restore" | "leave-user-changes";
 export type ComposerRecoveryDecision = "keep" | "reinsert" | "abort";
+export type ComposerSendAcceptanceDecision =
+  | "accepted"
+  | "pending"
+  | "changed";
 
 function normalizedComposerText(value: string): string {
   return value
     .replace(/\r\n?/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .trimEnd();
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function composerMatchesExpected(
@@ -13,6 +18,20 @@ export function composerMatchesExpected(
   current: string,
 ): boolean {
   return normalizedComposerText(expected) === normalizedComposerText(current);
+}
+
+export function composerSendAcceptanceDecision(
+  expected: string,
+  current: string,
+  source = expected,
+): ComposerSendAcceptanceDecision {
+  if (
+    composerMatchesExpected(expected, current) ||
+    composerMatchesExpected(source, current)
+  ) {
+    return "pending";
+  }
+  return normalizedComposerText(current).length === 0 ? "accepted" : "changed";
 }
 
 export function composerRollbackDecision(
@@ -43,9 +62,15 @@ export function composerRecoveryDecision(
   expected: string,
   current: string,
   userEdited: boolean,
+  source = expected,
 ): ComposerRecoveryDecision {
   const normalizedCurrent = normalizedComposerText(current);
-  if (composerMatchesExpected(expected, current)) return "keep";
+  if (
+    composerMatchesExpected(expected, current) ||
+    composerMatchesExpected(source, current)
+  ) {
+    return "keep";
+  }
   if (userEdited) return "abort";
   return normalizedCurrent.length === 0 ? "reinsert" : "abort";
 }

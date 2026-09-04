@@ -10,6 +10,12 @@ test("preserves multiline run commands", () => {
   );
 });
 
+test("accepts CRLF run directives from editor-backed code blocks", () => {
+  assert.deepEqual(parseKavrithRun("# kavrith:run\r\nset -e\r\nprintf ok"), {
+    command: "set -e\nprintf ok",
+  });
+});
+
 test("accepts run commands larger than the former 8000 character limit", () => {
   const command = `printf ok\n#${"x".repeat(8_100)}`;
   assert.deepEqual(parseKavrithRun(`# kavrith:run\n${command}`), { command });

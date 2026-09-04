@@ -20,6 +20,7 @@ const READONLY_TEXTBOX_SELECTOR = '[role="textbox"][aria-readonly="true"]';
 export default defineContentScript({
   matches: ["https://chatgpt.com/*"],
   world: "MAIN",
+  runAt: "document_start",
   main() {
     window.addEventListener(REQUEST_EVENT, (event) => {
       if (!(event instanceof CustomEvent)) return;

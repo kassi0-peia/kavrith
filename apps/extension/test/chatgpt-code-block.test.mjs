@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  directiveCodeSnapshot,
   directiveCodeText,
   isUnprocessedCodeBlock,
   preferredDirectiveCodeText,
@@ -33,6 +34,48 @@ test("prefers CodeMirror textbox text over pre UI text", () => {
     }),
   );
   assert.deepEqual(parseKavrithGit(text), { type: "status" });
+});
+
+test("does not trust a CodeMirror DOM fallback as the complete directive", () => {
+  assert.deepEqual(
+    directiveCodeSnapshot(
+      pre({ textbox: "# kavrith:run\nset -e", code: undefined }),
+      undefined,
+    ),
+    {
+      text: "# kavrith:run\nset -e",
+      authoritative: false,
+      editorBacked: true,
+    },
+  );
+});
+
+test("trusts the page-world CodeMirror document when available", () => {
+  assert.deepEqual(
+    directiveCodeSnapshot(
+      pre({ textbox: "# kavrith:run\nset -e", code: undefined }),
+      "# kavrith:run\nset -e\nprintf done",
+    ),
+    {
+      text: "# kavrith:run\nset -e\nprintf done",
+      authoritative: true,
+      editorBacked: true,
+    },
+  );
+});
+
+test("trusts ordinary non-CodeMirror code DOM fallback", () => {
+  assert.deepEqual(
+    directiveCodeSnapshot(
+      pre({ code: "# kavrith:git-status", textbox: undefined }),
+      undefined,
+    ),
+    {
+      text: "# kavrith:git-status",
+      authoritative: true,
+      editorBacked: false,
+    },
+  );
 });
 
 test("ignores non-Kavrith code blocks", () => {

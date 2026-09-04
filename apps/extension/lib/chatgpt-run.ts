@@ -5,6 +5,7 @@ export interface KavrithRunRequest {
 export const MAX_RUN_COMMAND_LENGTH = 65_536;
 
 export function parseKavrithRun(text: string): KavrithRunRequest | undefined {
+  text = text.replace(/\r\n?/g, "\n");
   const prefix = "# kavrith:run\n";
   if (!text.startsWith(prefix)) return undefined;
   const command = text.slice(prefix.length).trim();

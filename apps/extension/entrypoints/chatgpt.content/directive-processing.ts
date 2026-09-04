@@ -27,9 +27,8 @@ import {
 import { pendingResult } from "../../lib/result-outbox";
 import {
   directiveCodeContent,
-  directiveCodeText,
+  directiveCodeSnapshot,
   isUnprocessedCodeBlock,
-  preferredDirectiveCodeText,
 } from "../../lib/chatgpt-code-block";
 import { kavrithDirectiveParseError } from "../../lib/chatgpt-directive-error";
 
@@ -41,9 +40,13 @@ const CODE_TEXT_RESPONSE_EVENT = "kavrith:code-text-response";
 const CODE_READER_ID_ATTRIBUTE = "data-kavrith-code-reader-id";
 const renderedActions = new WeakMap<HTMLElement, HTMLElement[]>();
 const claimedMalformedDirectives = new Set<string>();
+const fullTextRetryAttempts = new WeakMap<HTMLElement, number>();
+const fullTextRetryTimers = new WeakMap<HTMLElement, number>();
+const MAX_FULL_TEXT_RETRY_ATTEMPTS = 5;
+const STARTUP_PRIME_BATCH_SIZE = 4;
+let startupPrimeGeneration = 0;
 
-function fullDirectiveCodeText(pre: HTMLElement): string | undefined {
-  const fallback = directiveCodeText(pre);
+function fullDirectiveCodeText(pre: HTMLElement) {
   const requestId = crypto.randomUUID();
   pre.setAttribute(CODE_READER_ID_ATTRIBUTE, requestId);
   let fullText: string | undefined;
@@ -71,7 +74,30 @@ function fullDirectiveCodeText(pre: HTMLElement): string | undefined {
   if (pre.getAttribute(CODE_READER_ID_ATTRIBUTE) === requestId) {
     pre.removeAttribute(CODE_READER_ID_ATTRIBUTE);
   }
-  return preferredDirectiveCodeText(fullText, fallback);
+  return directiveCodeSnapshot(pre, fullText);
+}
+
+function clearFullTextRetry(pre: HTMLElement): void {
+  const timer = fullTextRetryTimers.get(pre);
+  if (timer !== undefined) window.clearTimeout(timer);
+  fullTextRetryTimers.delete(pre);
+  fullTextRetryAttempts.delete(pre);
+}
+
+function retryWhenFullTextIsReady(pre: HTMLElement): boolean {
+  if (fullTextRetryTimers.has(pre)) return true;
+  const attempt = fullTextRetryAttempts.get(pre) ?? 0;
+  if (attempt >= MAX_FULL_TEXT_RETRY_ATTEMPTS) return false;
+  const delay = Math.min(200 * 2 ** Math.min(attempt, 5), 5_000);
+  fullTextRetryAttempts.set(pre, attempt + 1);
+  fullTextRetryTimers.set(
+    pre,
+    window.setTimeout(() => {
+      fullTextRetryTimers.delete(pre);
+      if (pre.isConnected) inspect(pre);
+    }, delay),
+  );
+  return true;
 }
 
 export function assistantMessageForNode(node: Node): HTMLElement | undefined {
@@ -187,10 +213,18 @@ export async function restoreQueuedResults(): Promise<void> {
   const codes = document.querySelectorAll<HTMLElement>(ASSISTANT_CODE_SELECTOR);
   for (const pre of codes) {
     const code = directiveCodeContent(pre) as HTMLElement | undefined;
-    const text = fullDirectiveCodeText(pre);
+    const snapshot = fullDirectiveCodeText(pre);
+    const text = snapshot.text;
     if (!code || text === undefined) continue;
+    if (!snapshot.authoritative && text.startsWith("# kavrith:")) {
+      if (retryWhenFullTextIsReady(pre)) continue;
+    }
     const directive = parseDirective(text);
     const parseError = directive ? undefined : kavrithDirectiveParseError(text);
+    if (!directive && parseError && retryWhenFullTextIsReady(pre)) {
+      continue;
+    }
+    clearFullTextRetry(pre);
     const identity = directive
       ? directiveId(code, directive.type, text)
       : parseError
@@ -201,12 +235,13 @@ export async function restoreQueuedResults(): Promise<void> {
     if (!queued) continue;
 
     const controls = createControls();
-    addComposerAction(controls, identity, queued.result);
+    addComposerAction(
+      controls,
+      identity,
+      queued.result,
+      "Kavrith result is queued and retrying automatically.",
+    );
     resumeQueuedResult(identity, queued.result);
-    const status = document.createElement("span");
-    status.textContent = "Kavrith result is queued and retrying automatically.";
-    status.style.cssText = "font:12px system-ui,sans-serif;color:#7f1d1d;";
-    controls.append(status);
     pre.append(controls);
     registerAction(code, controls);
   }
@@ -228,13 +263,21 @@ export function inspect(root: ParentNode): void {
       continue;
 
     const code = directiveCodeContent(pre) as HTMLElement | undefined;
-    const text = fullDirectiveCodeText(pre);
+    const snapshot = fullDirectiveCodeText(pre);
+    const text = snapshot.text;
     if (!code || text === undefined) continue;
+    if (!snapshot.authoritative && text.startsWith("# kavrith:")) {
+      if (retryWhenFullTextIsReady(pre)) continue;
+    }
     const directive = parseDirective(text);
     if (!directive) {
+      const parseError = kavrithDirectiveParseError(text);
+      if (parseError && retryWhenFullTextIsReady(pre)) continue;
+      clearFullTextRetry(pre);
       void handleMalformedDirective(pre, code, text);
       continue;
     }
+    clearFullTextRetry(pre);
 
     const identity = directiveId(code, directive.type, text);
     if (!identity) continue;
@@ -305,50 +348,83 @@ export function inspect(root: ParentNode): void {
 }
 
 export function primeExistingDirectives(): void {
+  const generation = ++startupPrimeGeneration;
   const codes = document.querySelectorAll<HTMLElement>(ASSISTANT_CODE_SELECTOR);
-  for (const pre of codes) {
-    if (!isUnprocessedCodeBlock(pre, PROCESSED_ATTRIBUTE, CLAIMING_ATTRIBUTE))
-      continue;
+  let index = 0;
 
-    const code = directiveCodeContent(pre) as HTMLElement | undefined;
-    const text = fullDirectiveCodeText(pre);
-    if (!code || text === undefined) continue;
-    const directive = parseDirective(text);
-    if (!directive) {
-      void handleMalformedDirective(pre, code, text);
-      continue;
-    }
+  const processBatch = (): void => {
+    // A later navigation/session prime supersedes this historical sweep.
+    if (generation !== startupPrimeGeneration) return;
 
-    const identity = directiveId(code, directive.type, text);
-    if (!identity) continue;
+    const end = Math.min(index + STARTUP_PRIME_BATCH_SIZE, codes.length);
+    for (; index < end; index += 1) {
+      const pre = codes[index];
+      if (
+        !pre ||
+        !pre.isConnected ||
+        !isUnprocessedCodeBlock(pre, PROCESSED_ATTRIBUTE, CLAIMING_ATTRIBUTE)
+      )
+        continue;
 
-    if (isMutationDirective(directive)) {
+      const code = directiveCodeContent(pre) as HTMLElement | undefined;
+      const snapshot = fullDirectiveCodeText(pre);
+      const text = snapshot.text;
+      if (!code || text === undefined) continue;
+      if (!snapshot.authoritative && text.startsWith("# kavrith:")) {
+        if (retryWhenFullTextIsReady(pre)) continue;
+      }
+      const directive = parseDirective(text);
+      if (!directive) {
+        const parseError = kavrithDirectiveParseError(text);
+        if (parseError && retryWhenFullTextIsReady(pre)) continue;
+        clearFullTextRetry(pre);
+        void handleMalformedDirective(pre, code, text);
+        continue;
+      }
+      clearFullTextRetry(pre);
+
+      const identity = directiveId(code, directive.type, text);
+      if (!identity) continue;
+
+      if (isMutationDirective(directive)) {
+        pre.setAttribute(CLAIMING_ATTRIBUTE, "true");
+        void getDirectiveState(identity).then(
+          (state) => {
+            pre.removeAttribute(CLAIMING_ATTRIBUTE);
+            if (state !== "pending") {
+              pre.setAttribute(PROCESSED_ATTRIBUTE, "true");
+              return;
+            }
+            addMutationAction(code, directive, identity, true);
+          },
+          () => {
+            pre.removeAttribute(CLAIMING_ATTRIBUTE);
+          },
+        );
+        continue;
+      }
+
       pre.setAttribute(CLAIMING_ATTRIBUTE, "true");
-      void getDirectiveState(identity).then(
-        (state) => {
+      void setDirectiveState(identity, "completed").then(
+        () => {
           pre.removeAttribute(CLAIMING_ATTRIBUTE);
-          if (state !== "pending") {
-            pre.setAttribute(PROCESSED_ATTRIBUTE, "true");
-            return;
-          }
-          addMutationAction(code, directive, identity, true);
+          pre.setAttribute(PROCESSED_ATTRIBUTE, "true");
         },
         () => {
           pre.removeAttribute(CLAIMING_ATTRIBUTE);
         },
       );
-      continue;
     }
 
-    pre?.setAttribute(CLAIMING_ATTRIBUTE, "true");
-    void setDirectiveState(identity, "completed").then(
-      () => {
-        pre?.removeAttribute(CLAIMING_ATTRIBUTE);
-        pre?.setAttribute(PROCESSED_ATTRIBUTE, "true");
-      },
-      () => {
-        pre?.removeAttribute(CLAIMING_ATTRIBUTE);
-      },
-    );
-  }
+    if (index < codes.length && generation === startupPrimeGeneration) {
+      // Historical discovery is background maintenance. Yield after a tiny
+      // batch so clicks, typing, painting, and ChatGPT itself get main-thread
+      // time even in conversations containing hundreds of code blocks.
+      window.setTimeout(processBatch, 0);
+    }
+  };
+
+  // Do not begin a potentially huge historical sweep inside the same task
+  // that initializes the composer. Give browser input/rendering a turn first.
+  window.setTimeout(processBatch, 0);
 }

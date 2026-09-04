@@ -16,7 +16,21 @@ export default defineContentScript({
     let lastSessionHref = location.href;
     let pendingInitialPrime = false;
     let rescanTimer: number | undefined;
+    let observedConversationRoot: Element | undefined;
     const pendingAssistantMessages = new Set<HTMLElement>();
+
+    const conversationRoot = (): Element | undefined => {
+      const composer = document.querySelector<HTMLElement>("#prompt-textarea");
+      const assistantMessage = document.querySelector<HTMLElement>(
+        "[data-message-author-role='assistant']",
+      );
+      return (
+        composer?.closest("main,[role='main']") ??
+        assistantMessage?.closest("main,[role='main']") ??
+        document.querySelector("main,[role='main']") ??
+        undefined
+      );
+    };
 
     const assistantIsGenerating = (): boolean => {
       const selectors = [
@@ -103,7 +117,7 @@ export default defineContentScript({
 
     void syncSession();
 
-    new MutationObserver((records) => {
+    const observer = new MutationObserver((records) => {
       const changedAssistantMessages = new Set<HTMLElement>();
       let composerChanged = false;
 
@@ -125,11 +139,7 @@ export default defineContentScript({
         }
       }
 
-      // ChatGPT is a SPA. Conversation navigation changes the URL, but most
-      // ordinary DOM churn does not require another storage-backed session sync.
-      if (location.href !== lastSessionHref) {
-        void syncSession();
-      } else if (composerChanged) {
+      if (composerChanged) {
         // Reposition/recreate Kavrith when ChatGPT replaces the composer without
         // paying for another conversation/session lookup.
         ensureChatInitializer();
@@ -142,10 +152,36 @@ export default defineContentScript({
       }
 
       scheduleRescan(1_200);
-    }).observe(document.documentElement, {
-      childList: true,
-      characterData: true,
-      subtree: true,
     });
+
+    const ensureConversationObserver = (): void => {
+      const root = conversationRoot();
+      if (
+        root === observedConversationRoot &&
+        observedConversationRoot?.isConnected
+      ) {
+        return;
+      }
+
+      observer.disconnect();
+      observedConversationRoot = root;
+      if (!root) return;
+
+      observer.observe(root, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+    };
+
+    ensureConversationObserver();
+
+    // Avoid observing all of documentElement merely to discover SPA navigation
+    // or a remounted conversation root. This cheap identity check keeps sidebar,
+    // menus, tooltips, and unrelated React hydration out of Kavrith's observer.
+    window.setInterval(() => {
+      ensureConversationObserver();
+      if (location.href !== lastSessionHref) void syncSession();
+    }, 1_000);
   },
 });

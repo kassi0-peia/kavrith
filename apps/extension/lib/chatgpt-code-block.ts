@@ -9,6 +9,12 @@ export interface DirectiveCodeContent {
   innerText: string;
 }
 
+export interface DirectiveCodeSnapshot {
+  text?: string;
+  authoritative: boolean;
+  editorBacked: boolean;
+}
+
 export function directiveCodeContent(
   pre: DirectiveCodeBlock,
 ): DirectiveCodeContent | undefined {
@@ -21,6 +27,25 @@ export function directiveCodeContent(
 
 export function directiveCodeText(pre: DirectiveCodeBlock): string | undefined {
   return directiveCodeContent(pre)?.innerText.trim();
+}
+
+export function directiveCodeSnapshot(
+  pre: DirectiveCodeBlock,
+  pageText: string | undefined,
+): DirectiveCodeSnapshot {
+  const text = preferredDirectiveCodeText(pageText, directiveCodeText(pre));
+  const pageAvailable = Boolean(pageText?.trim());
+  const usesReadonlyTextbox =
+    pre.querySelector(READONLY_TEXTBOX_SELECTOR) !== null;
+
+  return {
+    ...(text === undefined ? {} : { text }),
+    // A CodeMirror DOM is virtualized and may contain only the visible portion
+    // of a large block. Do not treat that fallback as the complete directive
+    // unless the page-world reader supplied the editor document.
+    authoritative: pageAvailable || !usesReadonlyTextbox,
+    editorBacked: usesReadonlyTextbox,
+  };
 }
 
 export function preferredDirectiveCodeText(

@@ -2,6 +2,7 @@ import {
   composerMatchesExpected,
   composerRecoveryDecision,
   composerRollbackDecision,
+  composerSendAcceptanceDecision,
   firstUsableCandidate,
 } from "../../lib/composer-delivery";
 
@@ -16,6 +17,7 @@ const SEND_READY_TIMEOUT_MS = 30_000;
 const COMPOSER_STABLE_MS = 300;
 const COMPOSER_STABLE_TIMEOUT_MS = 2_000;
 const COMPOSER_RESYNC_MS = 1_000;
+const SEND_ACCEPT_TIMEOUT_MS = 8_000;
 const DELIVERY_POLL_MIN_MS = 40;
 const DELIVERY_POLL_MAX_MS = 250;
 const DELIVERY_POLL_RAMP_MS = 5_000;
@@ -26,8 +28,8 @@ const SEND_BUTTON_SELECTOR = [
   "button[aria-label='Send prompt']",
   "button[aria-label='Send']",
   "button[aria-label='Send message']",
-  "button[type='submit']",
 ].join(",");
+const FORM_SEND_BUTTON_SELECTOR = `${SEND_BUTTON_SELECTOR},button[type='submit']`;
 const USER_EDIT_EVENTS = [
   "keydown",
   "paste",
@@ -107,21 +109,75 @@ function composerText(composer: Composer): string {
 }
 
 function findSendButton(composer: Composer): HTMLButtonElement | undefined {
+  const usableSendButton = (candidate: HTMLButtonElement): boolean => {
+    const testId = candidate.dataset.testid ?? "";
+    const ariaLabel = candidate.getAttribute("aria-label")?.trim().toLowerCase() ?? "";
+    return (
+      !candidate.disabled &&
+      candidate.getAttribute("aria-disabled") !== "true" &&
+      candidate.getClientRects().length > 0 &&
+      testId !== "stop-button" &&
+      !ariaLabel.startsWith("stop")
+    );
+  };
+
   const form = composer.closest("form");
   if (form) {
     const button = firstUsableCandidate(
-      form.querySelectorAll<HTMLButtonElement>(SEND_BUTTON_SELECTOR),
-      (candidate) =>
-        !candidate.disabled && candidate.getClientRects().length > 0,
+      form.querySelectorAll<HTMLButtonElement>(FORM_SEND_BUTTON_SELECTOR),
+      usableSendButton,
     );
     if (button) return button;
   }
 
   return firstUsableCandidate(
     document.querySelectorAll<HTMLButtonElement>(SEND_BUTTON_SELECTOR),
-    (candidate) =>
-      !candidate.disabled && candidate.getClientRects().length > 0,
+    usableSendButton,
   );
+}
+
+async function waitForSendAcceptance(
+  expectedComposerText: string,
+  sourceResult: string,
+): Promise<
+  | { ok: true }
+  | { ok: false; message: string; automaticRetry: false }
+> {
+  const deadline = performance.now() + SEND_ACCEPT_TIMEOUT_MS;
+  let sawComposer = false;
+
+  while (performance.now() < deadline) {
+    const current = findComposer();
+    if (!current) {
+      await delay(80);
+      continue;
+    }
+    sawComposer = true;
+
+    const decision = composerSendAcceptanceDecision(
+      expectedComposerText,
+      composerText(current),
+      sourceResult,
+    );
+    if (decision === "accepted") return { ok: true };
+    if (decision === "changed") {
+      return {
+        ok: false,
+        automaticRetry: false,
+        message:
+          "Result queued — the composer changed after Kavrith clicked Send, so delivery could not be confirmed. Check the chat, then use Send result if needed.",
+      };
+    }
+    await delay(80);
+  }
+
+  return {
+    ok: false,
+    automaticRetry: false,
+    message: sawComposer
+      ? "Result queued — Kavrith clicked Send but ChatGPT did not confirm delivery. The result was kept queued; use Send result to retry."
+      : "Result queued — ChatGPT's composer disappeared after Kavrith clicked Send, so delivery could not be confirmed. Check the chat, then use Send result if needed.",
+  };
 }
 
 function dispatchInput(composer: Composer, value: string): void {
@@ -187,7 +243,10 @@ function appendToComposer(
 
 export async function sendToChatGPT(
   result: string,
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<
+  | { ok: true }
+  | { ok: false; message: string; automaticRetry?: boolean }
+> {
   let composer = await waitForStableComposer();
   if (!composer) {
     return {
@@ -273,6 +332,7 @@ export async function sendToChatGPT(
         expectedComposerText,
         composerText(composer),
         userEdited,
+        result,
       );
       if (recovery === "abort") {
         return {
@@ -306,7 +366,7 @@ export async function sendToChatGPT(
       const send = findSendButton(composer);
       if (send) {
         send.click();
-        return { ok: true };
+        return await waitForSendAcceptance(expectedComposerText, result);
       }
 
       const now = performance.now();
@@ -331,6 +391,7 @@ export async function sendToChatGPT(
       expectedComposerText,
       composerText(finalComposer),
       userEdited,
+      result,
     );
     if (finalRecovery === "abort") {
       return {

@@ -414,13 +414,33 @@ function renderChatInitializer(): void {
   const observer = new ResizeObserver(() => place());
 
   const currentContainer = (): Element | undefined => {
-    const currentComposer = document.querySelector("#prompt-textarea");
-    return (
-      currentComposer?.closest("form") ??
-      currentComposer?.parentElement?.parentElement ??
-      currentComposer?.parentElement ??
-      undefined
+    const currentComposer =
+      document.querySelector<HTMLElement>("#prompt-textarea");
+    if (!currentComposer) return undefined;
+
+    const candidates = [
+      currentComposer.parentElement,
+      currentComposer.parentElement?.parentElement,
+      currentComposer.closest<HTMLElement>("form"),
+    ].filter(
+      (candidate): candidate is HTMLElement =>
+        candidate !== null && candidate !== undefined,
     );
+
+    // ChatGPT sometimes makes the composer form span a large portion of the
+    // viewport. Anchoring the fixed Kavrith badge to that rectangle makes it
+    // appear to wander while scrolling. Prefer the smallest visible container
+    // around the actual prompt editor instead.
+    return candidates
+      .filter((candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      })
+      .sort((left, right) => {
+        const a = left.getBoundingClientRect();
+        const b = right.getBoundingClientRect();
+        return a.width * a.height - b.width * b.height;
+      })[0];
   };
 
   const place = (): void => {
