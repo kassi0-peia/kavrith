@@ -5,25 +5,32 @@ import { parseKavrithPatch } from "../dist-test/lib/chatgpt-patch.js";
 
 test("preserves multiline run commands", () => {
   assert.deepEqual(
-    parseKavrithRun("# kavrith:run\nset -e\nprintf 'one\\n'\nprintf 'two\\n'"),
+    parseKavrithRun("# kavrith:run\nset -e\nprintf 'one\\n'\nprintf 'two\\n'\n# kavrith:end"),
     { command: "set -e\nprintf 'one\\n'\nprintf 'two\\n'" },
   );
 });
 
 test("accepts CRLF run directives from editor-backed code blocks", () => {
-  assert.deepEqual(parseKavrithRun("# kavrith:run\r\nset -e\r\nprintf ok"), {
+  assert.deepEqual(parseKavrithRun("# kavrith:run\r\nset -e\r\nprintf ok\r\n# kavrith:end"), {
     command: "set -e\nprintf ok",
   });
 });
 
 test("accepts run commands larger than the former 8000 character limit", () => {
   const command = `printf ok\n#${"x".repeat(8_100)}`;
-  assert.deepEqual(parseKavrithRun(`# kavrith:run\n${command}`), { command });
+  assert.deepEqual(parseKavrithRun(`# kavrith:run\n${command}\n# kavrith:end`), { command });
 });
 
 test("rejects run commands beyond the configured maximum", () => {
   assert.equal(
-    parseKavrithRun(`# kavrith:run\n${"x".repeat(MAX_RUN_COMMAND_LENGTH + 1)}`),
+    parseKavrithRun(`# kavrith:run\n${"x".repeat(MAX_RUN_COMMAND_LENGTH + 1)}\n# kavrith:end`),
+    undefined,
+  );
+});
+
+test("rejects a syntactically valid streamed run prefix without the end marker", () => {
+  assert.equal(
+    parseKavrithRun("# kavrith:run\nset -e\nprintf 'prefix is valid shell\\n'"),
     undefined,
   );
 });

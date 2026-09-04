@@ -1,4 +1,4 @@
-import { MAX_RUN_COMMAND_LENGTH } from "./chatgpt-run.js";
+import { MAX_RUN_COMMAND_LENGTH, RUN_END_MARKER } from "./chatgpt-run.js";
 
 export interface KavrithDirectiveParseError {
   type:
@@ -93,7 +93,18 @@ export function kavrithDirectiveParseError(
 
   if (/^# kavrith:run(?:\s|$)/.test(firstLine)) {
     if (firstLine === "# kavrith:run") {
-      const command = normalized.slice(firstLine.length).trim();
+      const payload = normalized.slice(firstLine.length).trim();
+      const suffix = `\n${RUN_END_MARKER}`;
+      if (!payload.endsWith(suffix)) {
+        return {
+          type: "run",
+          message: [
+            "Malformed kavrith:run directive: missing final # kavrith:end marker.",
+            "Put the directive marker on its own line, the shell command on the following line(s), and # kavrith:end on the final line.",
+          ].join("\n"),
+        };
+      }
+      const command = payload.slice(0, -suffix.length).trim();
       if (command.length > MAX_RUN_COMMAND_LENGTH) {
         return {
           type: "run",
@@ -105,9 +116,10 @@ export function kavrithDirectiveParseError(
       type: "run",
       message: [
         "Malformed kavrith:run directive.",
-        "Put the directive marker on its own line and the shell command on the following line(s).",
+        "Put the directive marker on its own line, the shell command on the following line(s), and # kavrith:end on the final line.",
         "# kavrith:run",
         "git status --short",
+        "# kavrith:end",
       ].join("\n"),
     };
   }

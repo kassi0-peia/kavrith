@@ -47,14 +47,25 @@ test("reports malformed exec and run directives", () => {
 
   const run = kavrithDirectiveParseError("# kavrith:run");
   assert.equal(run?.type, "run");
-  assert.match(run?.message ?? "", /following line/i);
+  assert.match(run?.message ?? "", /kavrith:end/i);
 });
 
 test("reports the actual limit for oversized run directives", () => {
-  const error = kavrithDirectiveParseError(`# kavrith:run\n${"x".repeat(65_537)}`);
+  const error = kavrithDirectiveParseError(
+    `# kavrith:run\n${"x".repeat(65_537)}\n# kavrith:end`,
+  );
   assert.equal(error?.type, "run");
   assert.match(error?.message ?? "", /65537 characters/i);
   assert.match(error?.message ?? "", /maximum is 65536/i);
+});
+
+test("reports a missing run end marker", () => {
+  const error = kavrithDirectiveParseError(
+    "# kavrith:run\nset -e\nprintf 'valid shell prefix\\n'",
+  );
+  assert.equal(error?.type, "run");
+  assert.match(error?.message ?? "", /missing final/i);
+  assert.match(error?.message ?? "", /kavrith:end/i);
 });
 
 test("reports malformed git and search directives", () => {

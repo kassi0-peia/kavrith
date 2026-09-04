@@ -121,7 +121,11 @@ export default defineContentScript({
         // be remounted later and produce ordinary DOM mutations; those must not
         // be mistaken for a new live reply and re-executed/reported.
         if (message !== latestAssistantMessage) continue;
-        inspect(message);
+        inspect(message, () => {
+          if (!message.isConnected) return;
+          pendingAssistantMessages.add(message);
+          scheduleRescan(0);
+        });
         await maybeRecoverMissingVisibleDirectiveForMessage(message);
       }
       pendingAssistantMessages.clear();

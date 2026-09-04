@@ -288,7 +288,7 @@ export async function restoreQueuedResults(): Promise<void> {
   }
 }
 
-export function inspect(root: ParentNode): void {
+export function inspect(root: ParentNode, retry: () => void): void {
   if (
     root instanceof HTMLElement &&
     !root.matches("pre") &&
@@ -308,13 +308,13 @@ export function inspect(root: ParentNode): void {
     const text = snapshot.text;
     if (!code || text === undefined) continue;
     if (!directiveSnapshotReadyForParsing(snapshot)) {
-      retryWhenFullTextIsReady(pre, () => inspect(pre));
+      retryWhenFullTextIsReady(pre, retry);
       continue;
     }
     const directive = parseDirective(text);
     if (!directive) {
       const parseError = kavrithDirectiveParseError(text);
-      if (parseError && retryWhenFullTextIsReady(pre, () => inspect(pre)))
+      if (parseError && retryWhenFullTextIsReady(pre, retry))
         continue;
       clearFullTextRetry(pre);
       void handleMalformedDirective(pre, code, text);

@@ -115,7 +115,7 @@ test("processed and claimed blocks are not processed again", () => {
 test("prefers the more complete matching directive candidate", () => {
   const text = preferredDirectiveCodeText(
     "# kavrith:run\nset -e",
-    "# kavrith:run\nset -e\nprintf 'done\\n'",
+    "# kavrith:run\nset -e\nprintf 'done\\n'\n# kavrith:end",
   );
   assert.deepEqual(parseKavrithRun(text), {
     command: "set -e\nprintf 'done\\n'",
