@@ -42,9 +42,12 @@ export async function syncKavrithSessionForCurrentPage(): Promise<string> {
     sessionStorage.getItem(KAVRITH_SESSION_ID_SESSION_KEY) ?? undefined;
 
   if (!conversationId) {
-    if (previousConversationId) {
-      return setCurrentSession(crypto.randomUUID());
-    }
+    // ChatGPT can temporarily expose a URL without a stable /c/<id> while
+    // remounting or navigating through a provisional route. Do not rotate the
+    // Kavrith session merely because that persisted conversation id briefly
+    // disappears; doing so can save repository selection against a transient
+    // session and then snap back to the old aliased session when /c/<id>
+    // returns.
     return existingLocalId ?? setCurrentSession(crypto.randomUUID());
   }
 
